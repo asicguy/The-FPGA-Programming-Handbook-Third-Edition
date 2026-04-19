@@ -107,8 +107,9 @@ begin
     wait on PL_USER_SW;
     wait for 1 ps;
     if PL_USER_PB(0) then
-      if lo_func(PL_USER_SW) /= unsigned(PL_USER_LED) then
-        report "FAIL: PL_USER_LED != leading 1's position" severity failure;
+      sw_add := resize(signed(PL_USER_SW(7 downto 4)), sw_add'length) + resize(signed(PL_USER_SW(3 downto 0)), sw_add'length);
+      if sw_add /= signed(PL_USER_LED) then
+        report "FAIL: PL_USER_LED != sum of PL_USER_SW[7:4] + PL_USER_SW[3:0] " & to_string(sw_add) & " != " & to_string(signed(PL_USER_LED)) severity failure;
       end if;
     end if;
     if PL_USER_PB(1) then
@@ -117,21 +118,20 @@ begin
       end if;
     end if;
     if PL_USER_PB(2) then
-      sw_add := resize(signed(PL_USER_SW(7 downto 4)), sw_add'length) + resize(signed(PL_USER_SW(3 downto 0)), sw_add'length);
-      if sw_add /= signed(PL_USER_LED) then
-        report "FAIL: PL_USER_LED != sum of PL_USER_SW[7:4] + PL_USER_SW[3:0] " & to_string(sw_add) & " != " & to_string(signed(PL_USER_LED)) severity failure;
+      if lo_func(PL_USER_SW) /= unsigned(PL_USER_LED) then
+        report "FAIL: PL_USER_LED != leading 1's position" severity failure;
       end if;
     end if;
     if PL_USER_PB(3) then
-      sw_sub := resize(signed(PL_USER_SW(7 downto 4)), sw_sub'length) - resize(signed(PL_USER_SW(3 downto 0)), sw_sub'length);
-      if sw_sub /= signed(PL_USER_LED) then
-        report "FAIL: PL_USER_LED != diff of PL_USER_SW[7:4] - PL_USER_SW[3:0] " & to_string(sw_sub) & " != " & to_string(signed(PL_USER_LED)) severity failure;
-      end if;
-    end if;
-    if PL_USER_PB = "0000" then
       sw_mul := signed(PL_USER_SW(7 downto 4)) * signed(PL_USER_SW(3 downto 0));
       if sw_mul /= signed(PL_USER_LED) then
         report "FAIL: PL_USER_LED != prod of PL_USER_SW[7:4] * PL_USER_SW[3:0]" severity failure;
+      end if;
+    end if;
+    if PL_USER_PB = "0000" then
+      sw_sub := resize(signed(PL_USER_SW(7 downto 4)), sw_sub'length) - resize(signed(PL_USER_SW(3 downto 0)), sw_sub'length);
+      if sw_sub /= signed(PL_USER_LED) then
+        report "FAIL: PL_USER_LED != diff of PL_USER_SW[7:4] - PL_USER_SW[3:0] " & to_string(sw_sub) & " != " & to_string(signed(PL_USER_LED)) severity failure;
       end if;
     end if;
   end process checker;

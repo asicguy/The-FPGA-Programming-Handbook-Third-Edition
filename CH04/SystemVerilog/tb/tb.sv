@@ -84,7 +84,7 @@ module tb;
         end
       end
       $display("Setting switches to %8b", PL_USER_SW);
-        #100;
+      #100;
     end
     PL_USER_SW = '0;
     #100;
@@ -94,17 +94,19 @@ module tb;
   end
 
   int sw_pos;
-  logic signed [15:0] sw_alu;
+  logic signed [7:0] sw_alu;
 
   // Checking
   always @(LED_TB) begin
     #1;
+    $display("LED: %b", PL_USER_LED);
     sw_pos  = '0;
     if (TEST_CASE == "ALL") begin
       case (1'b1)
         PL_USER_PB[0]: begin
-          if (lo_func(PL_USER_SW) != PL_USER_LED[$clog2(BITS):0]) begin
-            $display("FAIL: LED != leading 1's position");
+          sw_alu = signed'(PL_USER_SW[7:4]) + signed'(PL_USER_SW[3:0]);
+          if (sw_alu != PL_USER_LED) begin
+            $display("FAIL: LED != sum of PL_USER_SW[7:4] + PL_USER_SW[3:0]");
             $stop;
           end
         end
@@ -115,23 +117,22 @@ module tb;
           end
         end
         PL_USER_PB[2]: begin
-          sw_alu = signed'(PL_USER_SW[15:8]) + signed'(PL_USER_SW[7:0]);
-          if (sw_alu != PL_USER_LED) begin
-            $display("FAIL: LED != sum of PL_USER_SW[15:8] + PL_USER_SW[7:0]");
+          if (lo_func(PL_USER_SW) != PL_USER_LED[$clog2(BITS):0]) begin
+            $display("FAIL: LED != leading 1's position");
             $stop;
           end
         end
         PL_USER_PB[3]: begin
-          sw_alu = signed'(PL_USER_SW[15:8]) - signed'(PL_USER_SW[7:0]);
+          sw_alu = signed'(PL_USER_SW[7:4]) * signed'(PL_USER_SW[3:0]);
           if (sw_alu != PL_USER_LED) begin
-            $display("FAIL: LED != difference of PL_USER_SW[15:8] - PL_USER_SW[7:0]");
+            $display("FAIL: LED != product of PL_USER_SW[7:4] * PL_USER_SW[3:0]");
             $stop;
           end
         end
         default: begin
-          sw_alu = signed'(PL_USER_SW[15:8]) * signed'(PL_USER_SW[7:0]);
+          sw_alu = signed'(PL_USER_SW[7:4]) - signed'(PL_USER_SW[3:0]);
           if (sw_alu != PL_USER_LED) begin
-            $display("FAIL: LED != product of PL_USER_SW[15:8] * PL_USER_SW[7:0]");
+            $display("FAIL: LED != difference of PL_USER_SW[7:4] - PL_USER_SW[3:0]");
             $stop;
           end
         end
@@ -147,21 +148,21 @@ module tb;
         $stop;
       end
     end else if (TEST_CASE == "ADD") begin
-      sw_alu = signed'(PL_USER_SW[15:8]) + signed'(PL_USER_SW[7:0]);
+      sw_alu = signed'(PL_USER_SW[7:4]) + signed'(PL_USER_SW[3:0]);
       if (sw_alu != LED_TB) begin
-        $display("FAIL: LED != sum of PL_USER_SW[15:8] + PL_USER_SW[7:0]");
+        $display("FAIL: LED != sum of PL_USER_SW[7:4] + PL_USER_SW[3:0]");
         $stop;
       end
     end else if (TEST_CASE == "SUB") begin
-      sw_alu = signed'(PL_USER_SW[15:8]) - signed'(PL_USER_SW[7:0]);
+      sw_alu = signed'(PL_USER_SW[7:4]) - signed'(PL_USER_SW[3:0]);
       if (sw_alu != LED_TB) begin
-        $display("FAIL: LED != difference of PL_USER_SW[15:8] + PL_USER_SW[7:0]");
+        $display("FAIL: LED != difference of PL_USER_SW[7:4] + PL_USER_SW[3:0]");
         $stop;
       end
     end else if (TEST_CASE == "MULT") begin
-      sw_alu = signed'(PL_USER_SW[15:8]) * signed'(PL_USER_SW[7:0]);
+      sw_alu = signed'(PL_USER_SW[7:4]) * signed'(PL_USER_SW[3:0]);
       if (sw_alu != LED_TB) begin
-        $display("FAIL: LED != product of PL_USER_SW[15:8] - PL_USER_SW[7:0]");
+        $display("FAIL: LED != product of PL_USER_SW[7:4] - PL_USER_SW[3:0]");
         $stop;
       end
     end // if ((TEST_CASE == "LEADING_ONES") || (TEST_CASE == "ALL"))

@@ -149,7 +149,7 @@ set_property IOSTANDARD LVCMOS18 [get_ports {AIC_nRST[0]}]
 set_property PACKAGE_PIN G3 [get_ports AIC_sdata_o]
 set_property IOSTANDARD LVCMOS18 [get_ports AIC_sdata_o]
 ## AIC Codec's sdata Output to FPGA sdata Input
-set_property PACKAGE_PIN G4 [get_ports AIC_sdata_i]                   
+set_property PACKAGE_PIN G4 [get_ports AIC_sdata_i]
 set_property IOSTANDARD LVCMOS18 [get_ports AIC_sdata_i]
 ## FPGA sclk out to AIC Codec
 set_property PACKAGE_PIN G1 [get_ports AIC_sclk_o]
@@ -180,4 +180,3 @@ set_property PACKAGE_PIN AD5 [get_ports CAM0_OUT[2]];
 set_property IOSTANDARD LVCMOS12 [get_ports CAM0_OUT[2]];
 set_property PACKAGE_PIN J14 [get_ports CAM0_OUT[3]];
 set_property IOSTANDARD LVCMOS33 [get_ports CAM0_OUT[3]];
-

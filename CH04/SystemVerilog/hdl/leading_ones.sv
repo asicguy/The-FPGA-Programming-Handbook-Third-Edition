@@ -29,7 +29,7 @@ module leading_ones
           PL_USER_SW[2]:   PL_USER_LED  = 3;
           PL_USER_SW[1]:   PL_USER_LED  = 2;
           PL_USER_SW[0]:   PL_USER_LED  = 1;
-          //default: PL_USER_LED  = 0;
+          default: PL_USER_LED  = 0;
         endcase
       end // always_comb
     end else if (SELECTOR == "CASE") begin : g_CASE // block: g_UNIQUE_CASE

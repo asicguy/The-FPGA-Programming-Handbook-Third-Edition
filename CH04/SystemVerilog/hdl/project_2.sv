@@ -30,15 +30,15 @@ module project_2
   num_ones     #(                     .BITS(BITS)) u_no (.*, .PL_USER_LED(NO_LED));
   mult         #(                     .BITS(BITS)) u_mt (.*, .PL_USER_LED(MULT_LED));
 
-  //always_latch begin
-  always_comb begin
-    PL_USER_LED = '0;
+  //always_latch begin // Uncomment for latch
+  always_comb begin // Comment for latch
+    PL_USER_LED = '0; // Comment for latch
     case (1'b1)
       PL_USER_PB[3]: PL_USER_LED  = MULT_LED;
       PL_USER_PB[2]: PL_USER_LED  = LO_LED;
       PL_USER_PB[1]: PL_USER_LED  = NO_LED;
       PL_USER_PB[0]: PL_USER_LED  = AD_LED;
-      default:       PL_USER_LED  = SB_LED;
+      default:       PL_USER_LED  = SB_LED; // Comment for latch
     endcase
   end
 endmodule
