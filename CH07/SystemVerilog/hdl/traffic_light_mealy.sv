@@ -4,7 +4,7 @@
 // ------------------------------------
 // Author : Frank Bruno
 `timescale 1ns/10ps
-module traffic_light_moore
+module traffic_light_mealy
   #
   (
    parameter CLK_PER = 10
@@ -34,14 +34,11 @@ module traffic_light_moore
   light_t up_down;
   light_t left_right;
 
-  typedef enum bit [2:0]
+  typedef enum bit [1:0]
                {
-                INIT_UD_GREEN,
-                UD_GREEN_LR_RED,
-                UD_YELLOW_LR_RED,
-                INIT_UD_RED_LR_GREEN,
-                UD_RED_LR_GREEN,
-                UD_RED_LR_YELLOW
+                INIT,
+                W4BUTTON,
+                YELLOW2RED
                 } state_t;
 
   state_t state;
@@ -55,7 +52,7 @@ module traffic_light_moore
   initial begin
     up_down    = RED;
     left_right = GREEN;
-    state      = INIT_UD_GREEN;
+    state      = INIT;
     counter    = '0;
   end
 
@@ -71,39 +68,46 @@ module traffic_light_moore
     end
 
     case (state)
-      INIT_UD_GREEN: begin
+      INIT: begin
         up_down      <= GREEN;
         left_right   <= RED;
         enable_count <= '1;
-        if (counter == COUNT_10S) state <= UD_GREEN_LR_RED;
+        if (counter == COUNT_10S) begin
+          up_down    <= GREEN;
+          left_right <= RED;
+          state      <= W4BUTTON;
+        end
       end
-      UD_GREEN_LR_RED: begin
-        up_down      <= GREEN;
-        left_right   <= RED;
-        if (lr_reg[2]) state <= UD_YELLOW_LR_RED;
+      W4BUTTON: begin
+        case (up_down)
+          GREEN: begin
+            if (lr_reg[2]) begin
+              up_down    <= YELLOW;
+              left_right <= RED;
+              state      <= YELLOW2RED;
+            end
+          end
+          RED: begin
+            if (ud_reg[2]) begin
+              up_down    <= RED;
+              left_right <= YELLOW;
+              state      <= YELLOW2RED;
+            end
+          end
+        endcase
       end
-      UD_YELLOW_LR_RED: begin
-        up_down      <= YELLOW;
-        left_right   <= RED;
+      YELLOW2RED: begin
         enable_count <= '1;
-        if (counter == COUNT_10S) state <= INIT_UD_RED_LR_GREEN;
-      end
-      INIT_UD_RED_LR_GREEN: begin
-        up_down      <= RED;
-        left_right   <= GREEN;
-        enable_count <= '1;
-        if (counter == COUNT_10S) state <= UD_RED_LR_GREEN;
-      end
-      UD_RED_LR_GREEN: begin
-        up_down      <= RED;
-        left_right   <= GREEN;
-        if (ud_reg[2]) state <= UD_RED_LR_YELLOW;
-      end
-      UD_RED_LR_YELLOW: begin
-        up_down      <= RED;
-        left_right   <= YELLOW;
-        enable_count <= '1;
-        if (counter == COUNT_10S) state <= INIT_UD_GREEN;
+        if (counter == COUNT_10S) begin
+          if (up_down == YELLOW) begin
+            up_down    <= RED;
+            left_right <= GREEN;
+          end else begin
+            up_down    <= GREEN;
+            left_right <= RED;
+          end
+          state      <= W4BUTTON;
+        end
       end
     endcase // case INIT_UD_GREEN
   end // always @ (posedge CLK)
