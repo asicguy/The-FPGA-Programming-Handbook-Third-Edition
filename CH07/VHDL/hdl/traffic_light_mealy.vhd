@@ -14,10 +14,9 @@ entity traffic_light is
   );
   port(
     clk : in  std_logic;
-    SW  : in  std_logic_vector(1 downto 0);
-    R   : out std_logic_vector(1 downto 0);
-    G   : out std_logic_vector(1 downto 0);
-    B   : out std_logic_vector(1 downto 0)
+    PL_USER_SW  : in  std_logic_vector(1 downto 0);
+    PL_LEDRGB0  : out std_logic_vector(2 downto 0);
+    PL_LEDRGB1  : out std_logic_vector(2 downto 0)
   );
 end entity traffic_light;
 
@@ -35,7 +34,7 @@ architecture rtl of traffic_light is
   signal counter      : integer range 0 to COUNT_10S := 0;
   signal up_down      : light_t                      := RED;
   signal left_right   : light_t                      := GREEN;
-  signal state        : state_t                      := INIT_UD_GREEN;
+  signal state        : state_t                      := INIT;
   signal lr_reg       : std_logic_vector(2 downto 0) := (others => '0');
   signal ud_reg       : std_logic_vector(2 downto 0) := (others => '0');
   signal enable_count : std_logic                    := '0';
@@ -46,11 +45,11 @@ begin
   process(clk)
   begin
     if rising_edge(clk) then
-      lr_reg       <= lr_reg(1 downto 0) & SW(0);
-      ud_reg       <= ud_reg(1 downto 0) & SW(1);
+      lr_reg       <= lr_reg(1 downto 0) & PL_USER_SW(0);
+      ud_reg       <= ud_reg(1 downto 0) & PL_USER_SW(1);
       enable_count <= '0';
 
-      if enable_count then
+      if enable_count = '1' then
         if counter < COUNT_10S then
           counter <= counter + 1;
         end if;
@@ -64,17 +63,17 @@ begin
           left_right   <= RED;
           enable_count <= '1';
           if counter = COUNT_10S then
-            state <= UD_GREEN_LR_RED;
+            state <= W4BUTTON;
           end if;
         when W4BUTTON =>
           if up_down = GREEN then
-            if lr_reg(2) then
+            if lr_reg(2) = '1' then
               up_down    <= YELLOW;
               left_right <= RED;
               state      <= YELLOW2RED;
             end if;
           else
-            if ud_reg(2) then
+            if ud_reg(2) = '1' then
               up_down    <= RED;
               left_right <= YELLOW;
               state      <= YELLOW2RED;
@@ -107,28 +106,27 @@ begin
         pwm_count := pwm_count + 1;
       end if;
 
-      R <= (others => '0');
-      G <= (others => '0');
-      B <= (others => '0');
+      PL_LEDRGB0 <= (others => '0');
+      PL_LEDRGB1 <= (others => '0');
 
-      if light_count then
+      if light_count = '1' then
         case left_right is
           when GREEN =>
-            G(0) <= '1';
+            PL_LEDRGB0(1) <= '1';
           when YELLOW =>
-            R(0) <= '1';
-            G(0) <= '1';
+            PL_LEDRGB0(0) <= '1';
+            PL_LEDRGB0(1) <= '1';
           when RED =>
-            R(0) <= '1';
+            PL_LEDRGB0(0) <= '1';
         end case;
         case up_down is
           when GREEN =>
-            G(1) <= '1';
+            PL_LEDRGB1(1) <= '1';
           when YELLOW =>
-            R(1) <= '1';
-            G(1) <= '1';
+            PL_LEDRGB1(0) <= '1';
+            PL_LEDRGB1(1) <= '1';
           when RED =>
-            R(1) <= '1';
+            PL_LEDRGB1(0) <= '1';
         end case;
       end if;
     end if;

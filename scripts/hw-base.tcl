@@ -14,7 +14,17 @@ proc get_script_folder {} {
 }
 }
 
-source ../../../scripts/vivado_base.tcl
+set vivado_base ../../../scripts/vivado_base.tcl
+if { [file exists $vivado_base] == 1} {
+    set path ../../..
+    source ../../../scripts/vivado_base.tcl
+}
+
+set vivado_base ../../../../scripts/vivado_base.tcl
+if { [file exists $vivado_base] == 1} {
+    set path ../../../..
+    source ../../../../scripts/vivado_base.tcl
+}
 
 variable script_folder
 set script_folder [_tcl::get_script_folder]
@@ -146,11 +156,11 @@ if { $bCheckIPsPassed != 1 } {
 # Procedure to create entire design; Provide argument to make
 # procedure reusable. If parentCell is "", will use root.
 proc create_root_design { parentCell } {
-
+  variable path
   variable script_folder
   variable design_name
 
-  if {[string match "4G" [get_variant ../../../board.config]]} {
+  if {[string match "4G" [get_variant $path/board.config]]} {
       set highaddr 0xFFFFFFFF
       set bg_addr_count 1
       set dram_width {16 Bits}
