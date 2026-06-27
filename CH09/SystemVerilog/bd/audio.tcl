@@ -46,7 +46,7 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
 
 # The design that will be created by this Tcl script contains the following 
 # module references:
-# aic3204_wrapper
+# aic3104_wrapper
 
 # Please add the sources of those modules before sourcing this Tcl script.
 
@@ -139,6 +139,7 @@ if { $bCheckIPs == 1 } {
 xilinx.com:ip:zynq_ultra_ps_e:3.5\
 xilinx.com:ip:smartconnect:1.0\
 xilinx.com:ip:proc_sys_reset:5.0\
+xilinx.com:ip:system_ila:1.1\
 xilinx.com:ip:axi_gpio:2.0\
 xilinx.com:ip:axi_iic:2.1\
 xilinx.com:ip:clk_wiz:6.0\
@@ -167,7 +168,7 @@ xilinx.com:ip:clk_wiz:6.0\
 set bCheckModules 1
 if { $bCheckModules == 1 } {
    set list_check_mods "\ 
-aic3204_wrapper\
+aic3104_wrapper\
 "
 
    set list_mods_missing ""
@@ -276,29 +277,29 @@ proc create_hier_cell_audio { parentCell nameHier } {
   ] $clk_wiz_0
 
 
-  # Create instance: aic3204_wrapper_0, and set properties
-  set block_name aic3204_wrapper
-  set block_cell_name aic3204_wrapper_0
-  if { [catch {set aic3204_wrapper_0 [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
+  # Create instance: aic3104_wrapper_0, and set properties
+  set block_name aic3104_wrapper
+  set block_cell_name aic3104_wrapper_0
+  if { [catch {set aic3104_wrapper_0 [create_bd_cell -type module -reference $block_name $block_cell_name] } errmsg] } {
      catch {common::send_gid_msg -ssname BD::TCL -id 2095 -severity "ERROR" "Unable to add referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
      return 1
-   } elseif { $aic3204_wrapper_0 eq "" } {
+   } elseif { $aic3104_wrapper_0 eq "" } {
      catch {common::send_gid_msg -ssname BD::TCL -id 2096 -severity "ERROR" "Unable to referenced block <$block_name>. Please add the files for ${block_name}'s definition into the project."}
      return 1
    }
   
   # Create interface connections
   connect_bd_intf_net -intf_net Conn1 [get_bd_intf_pins axi_iic_0/IIC] [get_bd_intf_pins IIC_0]
-  connect_bd_intf_net -intf_net Conn2 [get_bd_intf_pins aic3204_wrapper_0/s_axi] [get_bd_intf_pins s_axi2]
   connect_bd_intf_net -intf_net axi_smc_M00_AXI [get_bd_intf_pins S_AXI] [get_bd_intf_pins axi_gpio_0/S_AXI]
   connect_bd_intf_net -intf_net axi_smc_M01_AXI [get_bd_intf_pins S_AXI1] [get_bd_intf_pins axi_iic_0/S_AXI]
+  connect_bd_intf_net -intf_net s_axi2_1 [get_bd_intf_pins s_axi2] [get_bd_intf_pins aic3104_wrapper_0/s_axi]
 
   # Create port connections
-  connect_bd_net -net aic3204_wrapper_0_AIC_lrclk_o  [get_bd_pins aic3204_wrapper_0/AIC_lrclk_o] \
+  connect_bd_net -net aic3104_wrapper_0_AIC_lrclk_o  [get_bd_pins aic3104_wrapper_0/AIC_lrclk_o] \
   [get_bd_pins AIC_lrclk_o_0]
-  connect_bd_net -net aic3204_wrapper_0_AIC_sclk_o  [get_bd_pins aic3204_wrapper_0/AIC_sclk_o] \
+  connect_bd_net -net aic3104_wrapper_0_AIC_sclk_o  [get_bd_pins aic3104_wrapper_0/AIC_sclk_o] \
   [get_bd_pins AIC_sclk_o_0]
-  connect_bd_net -net aic3204_wrapper_0_i2s_sdata_o  [get_bd_pins aic3204_wrapper_0/i2s_sdata_o] \
+  connect_bd_net -net aic3104_wrapper_0_i2s_sdata_o  [get_bd_pins aic3104_wrapper_0/i2s_sdata_o] \
   [get_bd_pins i2s_sdata_o_0]
   connect_bd_net -net axi_gpio_0_gpio_io_o  [get_bd_pins axi_gpio_0/gpio_io_o] \
   [get_bd_pins gpio_io_o_0]
@@ -306,19 +307,19 @@ proc create_hier_cell_audio { parentCell nameHier } {
   [get_bd_pins iic2intc_irpt]
   connect_bd_net -net clk_wiz_0_clk_out1  [get_bd_pins clk_wiz_0/clk_out1] \
   [get_bd_pins clk_out1_0] \
-  [get_bd_pins aic3204_wrapper_0/AIC_mclk_o]
+  [get_bd_pins aic3104_wrapper_0/AIC_mclk_o]
   connect_bd_net -net i2s_sdata_i_0_1  [get_bd_pins i2s_sdata_i_0] \
-  [get_bd_pins aic3204_wrapper_0/i2s_sdata_i]
+  [get_bd_pins aic3104_wrapper_0/i2s_sdata_i]
   connect_bd_net -net rst_ps8_0_95M_peripheral_aresetn  [get_bd_pins s_axi_aresetn] \
   [get_bd_pins axi_iic_0/s_axi_aresetn] \
   [get_bd_pins axi_gpio_0/s_axi_aresetn] \
   [get_bd_pins clk_wiz_0/resetn] \
-  [get_bd_pins aic3204_wrapper_0/s_axi_aresetn]
+  [get_bd_pins aic3104_wrapper_0/s_axi_aresetn]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_clk0  [get_bd_pins s_axi_aclk] \
   [get_bd_pins axi_iic_0/s_axi_aclk] \
   [get_bd_pins axi_gpio_0/s_axi_aclk] \
   [get_bd_pins clk_wiz_0/clk_in1] \
-  [get_bd_pins aic3204_wrapper_0/s_axi_aclk]
+  [get_bd_pins aic3104_wrapper_0/s_axi_aclk]
 
   # Restore current instance
   current_bd_instance $oldCurInst
@@ -1403,11 +1404,15 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   # Create instance: audio
   create_hier_cell_audio [current_bd_instance .] audio
 
+  # Create instance: system_ila_1, and set properties
+  set system_ila_1 [ create_bd_cell -type ip -vlnv xilinx.com:ip:system_ila:1.1 system_ila_1 ]
+
   # Create interface connections
   connect_bd_intf_net -intf_net audio_IIC_0 [get_bd_intf_ports i2c_aic] [get_bd_intf_pins audio/IIC_0]
   connect_bd_intf_net -intf_net axi_smc_M00_AXI [get_bd_intf_pins axi_smc/M00_AXI] [get_bd_intf_pins audio/S_AXI]
   connect_bd_intf_net -intf_net axi_smc_M01_AXI [get_bd_intf_pins axi_smc/M01_AXI] [get_bd_intf_pins audio/S_AXI1]
   connect_bd_intf_net -intf_net axi_smc_M02_AXI [get_bd_intf_pins axi_smc/M02_AXI] [get_bd_intf_pins audio/s_axi2]
+connect_bd_intf_net -intf_net [get_bd_intf_nets axi_smc_M02_AXI] [get_bd_intf_pins axi_smc/M02_AXI] [get_bd_intf_pins system_ila_1/SLOT_0_AXI]
   connect_bd_intf_net -intf_net zynq_ultra_ps_e_0_M_AXI_HPM0_FPD [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_FPD] [get_bd_intf_pins axi_smc/S00_AXI]
 
   # Create port connections
@@ -1427,17 +1432,19 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   [get_bd_pins audio/i2s_sdata_i_0]
   connect_bd_net -net rst_ps8_0_95M_peripheral_aresetn  [get_bd_pins rst_ps8_0_95M/peripheral_aresetn] \
   [get_bd_pins axi_smc/aresetn] \
-  [get_bd_pins audio/s_axi_aresetn]
+  [get_bd_pins audio/s_axi_aresetn] \
+  [get_bd_pins system_ila_1/resetn]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_clk0  [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] \
   [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_fpd_aclk] \
   [get_bd_pins axi_smc/aclk] \
+  [get_bd_pins audio/s_axi_aclk] \
   [get_bd_pins rst_ps8_0_95M/slowest_sync_clk] \
-  [get_bd_pins audio/s_axi_aclk]
+  [get_bd_pins system_ila_1/clk]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_resetn0  [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] \
   [get_bd_pins rst_ps8_0_95M/ext_reset_in]
 
   # Create address segments
-  assign_bd_address -offset 0xA0020000 -range 0x00010000 -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] [get_bd_addr_segs audio/aic3204_wrapper_0/s_axi/reg0] -force
+  assign_bd_address -offset 0xA0400000 -range 0x00400000 -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] [get_bd_addr_segs audio/aic3104_wrapper_0/s_axi/reg0] -force
   assign_bd_address -offset 0xA0000000 -range 0x00010000 -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] [get_bd_addr_segs audio/axi_gpio_0/S_AXI/Reg] -force
   assign_bd_address -offset 0xA0010000 -range 0x00010000 -target_address_space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data] [get_bd_addr_segs audio/axi_iic_0/S_AXI/Reg] -force
 

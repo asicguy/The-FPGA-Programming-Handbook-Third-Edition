@@ -209,10 +209,11 @@ class AIC3104:
                   f"128*Q*fs (e.g. {256*fs} Hz for Q=2) or program the PLL "
                   f"(R3-R6). Clamping Q={max(2, min(17, q))} for now.")
             q = max(2, min(17, q))
-        self.w(R_CLKDIV, 0x00)               # R102: CLKDIV_IN = MCLK (D7:6=00)
-        self.w(R_CLKGEN, 0x00)               # R101: CODEC_CLKIN = CLKDIV_OUT
-        self.w(R_PLL_A, ((q & 0x0F) << 3) | 0x01)  # R3: PLL off (D7=0), Q, P=1
-        self.w(R_SAMPLE_RATE, 0x00)          # R2: ADC=DAC=fsref (NCODEC=1)
+        #self.w(R_CLKDIV, 0x00)               # R102: CLKDIV_IN = MCLK (D7:6=00)
+        #self.w(R_CLKGEN, 0x00)               # R101: CODEC_CLKIN = CLKDIV_OUT
+        #self.w(R_PLL_A, ((q & 0x0F) << 3) | 0x01)  # R3: PLL off (D7=0), Q, P=1
+        #self.w(R_SAMPLE_RATE, 0x00)          # R2: ADC=DAC=fsref (NCODEC=1)
+        #self.w(R_SAMPLE_RATE, 0x00)          # R2: ADC=DAC=fsref (NCODEC=1)
 
         # ---- datapath: pick fsref base, route L->L and R->R ----
         fsref_44k = (fs % 11025 == 0)        # 44.1k family vs 48k family
@@ -221,7 +222,8 @@ class AIC3104:
         # ---- serial audio interface: I2S, slave, word length ----
         self.w(R_SERIAL_A, 0x00)             # BCLK & WCLK = inputs (codec slave)
         wl = {16: 0b00, 20: 0b01, 24: 0b10, 32: 0b11}.get(word_len, 0b00)
-        self.w(R_SERIAL_B, wl << 4)          # I2S (D7:6=00) + word length (D5:4)
+        #self.w(R_SERIAL_B, wl << 4)          # I2S (D7:6=00) + word length (D5:4)
+        self.w(R_SERIAL_B, 0xF0)          # I2S (D7:6=00) + word length (D5:4)
         self.w(R_SERIAL_C, 0x00)             # no data offset
         self.w(R_DIGITAL_FILT, 0x00)         # ADC HPF off (0x50 to enable L&R)
 
@@ -252,7 +254,7 @@ class AIC3104:
         self.w(R_LINE1RP_TO_R, 0xFC)         # LINE1RP off,             R ADC pwr
         self._input = "line_in"
 
-    def select_microphone(self, bias=0b11):
+    def select_microphone(self, bias=0b01):
         """Enable MICBIAS and route the mic jack (MIC1 -> LINE1) to the ADC.
         bias: 00 off, 01 2.0V, 10 2.5V, 11 AVDD.
         NOTE: this routes the LINE1 positive inputs and powers the ADC; the

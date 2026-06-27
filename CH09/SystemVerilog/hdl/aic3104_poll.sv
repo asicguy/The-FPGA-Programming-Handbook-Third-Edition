@@ -1,4 +1,4 @@
-module aic3104
+module aic3104_poll
   (
    input               s_axi_aclk,
    input               s_axi_aresetn,
