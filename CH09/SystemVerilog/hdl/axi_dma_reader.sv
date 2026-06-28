@@ -85,9 +85,9 @@ module axi_dma_reader #(
     output logic                          m_axi_rready,
 
     // ---- AXI4-Stream master output ----
-    (* mark_debug = "true" *) output logic [AXI_DATA_WIDTH-1:0]     m_axis_tdata,
-    (* mark_debug = "true" *) output logic                          m_axis_tvalid,
-    (* mark_debug = "true" *) input  logic                          m_axis_tready,
+    output logic [AXI_DATA_WIDTH-1:0]     m_axis_tdata,
+    output logic                          m_axis_tvalid,
+    input  logic                          m_axis_tready,
     output logic                          m_axis_tlast
 );
 
@@ -128,7 +128,7 @@ module axi_dma_reader #(
     //  Control / counters
     // ==================================================================
     typedef enum logic [1:0] { S_IDLE, S_RUN, S_DONE } state_t;
-    state_t state;
+    (* mark_debug = "true" *) state_t state;
     logic   run;
     assign  run = (state == S_RUN);
 
@@ -144,7 +144,7 @@ module axi_dma_reader #(
     //  AR-issue sub-FSM
     // ==================================================================
     typedef enum logic [0:0] { AR_IDLE, AR_REQ } ar_state_t;
-    ar_state_t ar_state;
+    (* mark_debug = "true" *) ar_state_t ar_state;
     logic [8:0] burst_beats_q;                  // beats latched for the in-flight AR
 
     // --- Combinational next-burst sizing (mirrors the writer) ---

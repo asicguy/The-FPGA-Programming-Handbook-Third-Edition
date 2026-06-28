@@ -1,15 +1,14 @@
 module aic3104_dma_wrapper
   #
   (
-   parameter AXI_ADDR_WIDTH = 40, // match the PS HP/HPC port width
-   parameter AXI_DATA_WIDTH = 32, // 32 = one packed L/R sample per beat
-   parameter AXI_ID_WIDTH = 6, // ZynqMP HP IDs are wider than ZC7000
-   parameter MAX_BURST_LEN = 16, // AMD recommends 16 on MPSoC HP ports
-   parameter FIFO_DEPTH = 1024  // power of two recommended
+   parameter int AXI_ADDR_WIDTH = 40, // match the PS HP/HPC port width
+   parameter int AXI_DATA_WIDTH = 32, // 32 = one packed L/R sample per beat
+   parameter int AXI_ID_WIDTH = 6, // ZynqMP HP IDs are wider than ZC7000
+   parameter int MAX_BURST_LEN = 16, // AMD recommends 16 on MPSoC HP ports
+   parameter int FIFO_DEPTH = 1024  // power of two recommended
    )
   (
    // AXI lite interface for register acceess
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 CLK.s_axi_aclk CLK" *) (* X_INTERFACE_PARAMETER = "XIL_INTERFACENAME CLK.s_axi_aclk, ASSOCIATED_BUSIF s_axi:m_axi, CLK_DOMAIN s_axi_aclk, FREQ_HZ 95454536, FREQ_TOLERANCE_HZ -1, INSERT_VIP 0, PHASE 0" *)
    input                         s_axi_aclk,
    input                         s_axi_aresetn,
    input [21:0]                  s_axi_awaddr,
@@ -65,14 +64,15 @@ module aic3104_dma_wrapper
    output [3:0]                  m_axi_arcache,
    output [2:0]                  m_axi_arprot,
    output                        m_axi_arvalid,
-   input                               m_axi_arready,
+   input                         m_axi_arready,
 
-   // ---- AXI4 master: read data channel ----
-   input [AXI_DATA_WIDTH-1:0]          m_axi_rdata,
-   input [1:0]                         m_axi_rresp,
-   input                               m_axi_rlast,
-   input                               m_axi_rvalid,
+    // ---- AXI4 master: read data channel ----
+   input [AXI_DATA_WIDTH-1:0]    m_axi_rdata,
+   input [1:0]                   m_axi_rresp,
+   input                         m_axi_rlast,
+   input                         m_axi_rvalid,
    output                        m_axi_rready,
+
    output                        interrupt_out,
 
    input                         AIC_mclk_o,
@@ -157,6 +157,7 @@ module aic3104_dma_wrapper
    .m_axi_rlast(m_axi_rlast),
    .m_axi_rvalid(m_axi_rvalid),
    .m_axi_rready(m_axi_rready),
+
    .interrupt_out(interrupt_out),
 
    .AIC_mclk_o(AIC_mclk_o),

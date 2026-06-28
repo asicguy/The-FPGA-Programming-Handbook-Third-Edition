@@ -180,3 +180,8 @@ set_property PACKAGE_PIN AD5 [get_ports CAM0_OUT[2]];
 set_property IOSTANDARD LVCMOS12 [get_ports CAM0_OUT[2]];
 set_property PACKAGE_PIN J14 [get_ports CAM0_OUT[3]];
 set_property IOSTANDARD LVCMOS33 [get_ports CAM0_OUT[3]];
+
+
+
+
+
