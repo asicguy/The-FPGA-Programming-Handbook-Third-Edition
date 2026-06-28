@@ -53,6 +53,26 @@ module aic3104_dma
    input [1:0]                         m_axi_bresp,
    input                               m_axi_bvalid,
    output logic                        m_axi_bready,
+
+    // ---- AXI4 master: read address channel (playback / MM2S) ----
+   output logic [AXI_ID_WIDTH-1:0]     m_axi_arid,
+   output logic [AXI_ADDR_WIDTH-1:0]   m_axi_araddr,
+   output logic [7:0]                  m_axi_arlen,
+   output logic [2:0]                  m_axi_arsize,
+   output logic [1:0]                  m_axi_arburst,
+   output logic                        m_axi_arlock,
+   output logic [3:0]                  m_axi_arcache,
+   output logic [2:0]                  m_axi_arprot,
+   output logic                        m_axi_arvalid,
+   input                               m_axi_arready,
+
+    // ---- AXI4 master: read data channel ----
+   input [AXI_DATA_WIDTH-1:0]          m_axi_rdata,
+   input [1:0]                         m_axi_rresp,
+   input                               m_axi_rlast,
+   input                               m_axi_rvalid,
+   output logic                        m_axi_rready,
+
    output logic                        interrupt_out,
 
    input                               AIC_mclk_o,
@@ -96,11 +116,13 @@ module aic3104_dma
   logic [7:0]  tx_ctrl = '0;
   logic [15:0] tx_count, rx_count;
   logic [31:0] tx_data;
+  logic [63:0] tx_dout;
   (* mark_debug = "true" *) logic [31:0] rx_data;
   (* mark_debug = "true" *) logic        rx_push;
   logic        tx_pop;
   logic [31:0] tx_din;
   logic        tx_push;
+  logic        tx_stream_valid, tx_stream_ready;
   logic        tx_empty;
   (* mark_debug = "true" *) logic        rx_empty;
   (* mark_debug = "true" *) logic        rx_pop;
@@ -109,7 +131,7 @@ module aic3104_dma
   logic [63:0] buf_rd_addr, buf_wr_addr;
   logic [31:0] buf_rd_count, buf_wr_count;
   (* mark_debug = "true" *) logic        rd_start;
-  logic        rd_busy;
+  (* mark_debug = "true" *) logic        rd_busy;
   (* mark_debug = "true" *) logic        rd_done;
   logic [31:0] rd_bytes_written;
   logic        rd_overflow;
@@ -228,7 +250,6 @@ module aic3104_dma
   end // always @ (posedge axil_clk)
 
   always @(posedge s_axi_aclk) begin
-    tx_push <= '0;
     rd_start <= '0;
     wr_start <= '0;
     if (set_int) interrupt_out <= '1;
@@ -307,11 +328,12 @@ module aic3104_dma
     i2s_counter = '0;
   end
 
+  assign tx_dout = {tx_data[31:16], 16'b0, tx_data[15:0], 16'b0};
   always @(posedge AIC_mclk_o) begin
     i2s_counter <= i2s_counter + 1; // free running counter for clock gen
     rx_push     <= &i2s_counter;
     if (i2s_counter[1:0] == 2'b10) begin
-      i2s_sdata_o              <= tx_data[{i2s_counter[7], 4'(15-i2s_counter[6:3])}];
+      i2s_sdata_o              <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
       rx_din[{i2s_counter[7], 5'(31-i2s_counter[6:2])}] <= i2s_sdata_i;
     end
   end
@@ -444,8 +466,8 @@ module aic3104_dma
      .cfg_start(wr_start),         // 1-cycle pulse to begin
      .sts_busy(wr_busy),
      .sts_done(wr_done),          // held high once buffer filled
-     .sts_bytes_written(wr_bytes_written),
-     .sts_overflow(wr_overflow),      // sticky: a sample was dropped
+     .sts_bytes_written(wr_bytes_read),   // read back via REG_RX_BYTES_READ
+     .sts_overflow(wr_underflow),     // sticky: a sample was dropped (REG_RX_STAT[3])
      .sts_bresp(wr_bresp),         // last write response captured
 
      // ---- Audio sample input: AXI4-Stream slave ----
@@ -455,6 +477,67 @@ module aic3104_dma
 
      // AXI interface we can use
      .*
+     );
+
+  // ---------------------------------------------------------------------------
+  //  Playback (MM2S): axi_dma_reader streams the DDR buffer into the TX FIFO,
+  //  which the I2S generator drains one packed L/R sample per LRCLK frame.
+  //  Same 32-bit packing as capture: bits[31:16]=right, bits[15:0]=left.
+  //  The reader shares the m_axi master with the writer (writer drives AW/W/B,
+  //  reader drives AR/R), so one HP/HPC slave port carries both directions.
+  // ---------------------------------------------------------------------------
+  assign tx_stream_ready = ~tx_full;
+  assign tx_push         = tx_stream_valid & tx_stream_ready;
+
+  axi_dma_reader
+    #
+    (
+     .AXI_ADDR_WIDTH  (AXI_ADDR_WIDTH),
+     .AXI_DATA_WIDTH  (AXI_DATA_WIDTH),
+     .AXI_ID_WIDTH    (AXI_ID_WIDTH),
+     .MAX_BURST_LEN   (MAX_BURST_LEN),
+     .FIFO_DEPTH      (FIFO_DEPTH),
+     .PRIME_THRESHOLD (FIFO_DEPTH/2)
+     )
+  axi_dma_reader
+    (
+     .clk             (s_axi_aclk),
+     .resetn          (s_axi_aresetn),      // active-low
+
+     // ---- Control / status (TX registers) ----
+     .cfg_buf_addr    (buf_rd_addr[AXI_ADDR_WIDTH-1:0]),
+     .cfg_buf_len     (buf_rd_count),
+     .cfg_start       (rd_start),
+     .sts_busy        (rd_busy),
+     .sts_done        (rd_done),
+     .sts_bytes_read  (rd_bytes_written),
+     .sts_underflow   (rd_overflow),        // sticky: TX FIFO starved mid-play
+     .sts_rresp       (rd_bresp),
+
+     // ---- AXI4 master: read address channel ----
+     .m_axi_arid      (m_axi_arid),
+     .m_axi_araddr    (m_axi_araddr),
+     .m_axi_arlen     (m_axi_arlen),
+     .m_axi_arsize    (m_axi_arsize),
+     .m_axi_arburst   (m_axi_arburst),
+     .m_axi_arlock    (m_axi_arlock),
+     .m_axi_arcache   (m_axi_arcache),
+     .m_axi_arprot    (m_axi_arprot),
+     .m_axi_arvalid   (m_axi_arvalid),
+     .m_axi_arready   (m_axi_arready),
+
+     // ---- AXI4 master: read data channel ----
+     .m_axi_rdata     (m_axi_rdata),
+     .m_axi_rresp     (m_axi_rresp),
+     .m_axi_rlast     (m_axi_rlast),
+     .m_axi_rvalid    (m_axi_rvalid),
+     .m_axi_rready    (m_axi_rready),
+
+     // ---- AXI4-Stream master -> TX FIFO ----
+     .m_axis_tdata    (tx_din),
+     .m_axis_tvalid   (tx_stream_valid),
+     .m_axis_tready   (tx_stream_ready),
+     .m_axis_tlast    ()
      );
 
 endmodule // aic3204

@@ -20,6 +20,11 @@ module tb_aic3104;
   localparam            REG_VER           = 12'h204;
   localparam            REG_INT           = 12'h208;
 
+  // Backpressure pass: 1536 beats (6 KB) exceeds BOTH the 128-deep TX FIFO and
+  // the reader's 1024-deep internal FIFO, so it exercises tx_full throttling
+  // and the AR read-ahead credit logic. Reduce if the sim runs too long.
+  localparam int        BIG_BEATS         = 1536;
+
   logic         s_axi_aclk = '0;
   logic         s_axi_aresetn;
   logic [21:0]  s_axi_awaddr;
@@ -60,6 +65,23 @@ module tb_aic3104;
   logic                        m_axi_bvalid;
   logic                        m_axi_bready;
 
+  // ---- read master (MM2S / playback) ----
+  logic [AXI_ID_WIDTH-1:0]     m_axi_arid;
+  logic [AXI_ADDR_WIDTH-1:0]   m_axi_araddr;
+  logic [7:0]                  m_axi_arlen;
+  logic [2:0]                  m_axi_arsize;
+  logic [1:0]                  m_axi_arburst;
+  logic                        m_axi_arlock;
+  logic [3:0]                  m_axi_arcache;
+  logic [2:0]                  m_axi_arprot;
+  logic                        m_axi_arvalid;
+  logic                        m_axi_arready;
+  logic [AXI_DATA_WIDTH-1:0]   m_axi_rdata;
+  logic [1:0]                  m_axi_rresp;
+  logic                        m_axi_rlast;
+  logic                        m_axi_rvalid;
+  logic                        m_axi_rready;
+
   logic         AIC_mclk_o = '0;
   wire          AIC_lrclk_o;
   wire          AIC_sclk_o;
@@ -67,6 +89,17 @@ module tb_aic3104;
   wire          i2s_sdata_o;
   logic [31:0]  test_reg, read_data;
   logic         rst_n = '1;
+
+  // Loopback monitor: record every AXI write beat (capture) and every AXI read
+  // beat (playback) so the MM2S path can be checked against what S2MM stored.
+  logic [AXI_DATA_WIDTH-1:0] wr_q[$];
+  logic [AXI_DATA_WIDTH-1:0] rd_q[$];
+  always @(posedge s_axi_aclk) begin
+    if (s_axi_aresetn) begin
+      if (m_axi_wvalid && m_axi_wready) wr_q.push_back(m_axi_wdata);
+      if (m_axi_rvalid && m_axi_rready) rd_q.push_back(m_axi_rdata);
+    end
+  end
 
   always AIC_mclk_o = #(83/2) ~AIC_mclk_o;
   always s_axi_aclk = #10 ~s_axi_aclk;
@@ -92,7 +125,81 @@ module tb_aic3104;
     do begin
       cpu_rd_reg(REG_RX_STAT);
     end while (~test_reg[31]);
+    $display("[%0t] Capture complete: %0d write beats recorded", $time, wr_q.size());
 
+    // -------------------------------------------------------------------
+    // MM2S playback: stream the just-captured buffer back out through the
+    // I2S TX path and verify the reader fetched exactly what S2MM stored.
+    // -------------------------------------------------------------------
+    cpu_wr_reg(REG_TX_ADDR_LO, 32'h0);
+    cpu_wr_reg(REG_TX_ADDR_HI, 32'h0);
+    cpu_wr_reg(REG_TX_BYTES,   32'(128));
+    cpu_wr_reg(REG_TX_START,   32'h1);
+    wait_done(REG_TX_STAT);                 // wait sts_done (bit 31)
+
+    if (test_reg[3]) begin                  // bit 3 = sts_underflow
+      $display("[%0t] ERROR: MM2S underflow - TX FIFO starved", $time);
+      $stop;
+    end
+    cpu_rd_reg_verify(REG_TX_BYTES_READ, 32'(128));
+    $display("[%0t] Playback done: %0d read beats recorded", $time, rd_q.size());
+
+    // Loopback check: the bytes streamed back must match what was captured.
+    if (rd_q.size() != wr_q.size()) begin
+      $display("ERROR: beat-count mismatch  wr=%0d rd=%0d",
+               wr_q.size(), rd_q.size());
+      $stop;
+    end
+    foreach (wr_q[i]) begin
+      if (wr_q[i] !== rd_q[i]) begin
+        $display("ERROR: beat %0d mismatch  wrote=%h read=%h",
+                 i, wr_q[i], rd_q[i]);
+        $stop;
+      end
+    end
+    $display("[%0t] Pass 1 (small) loopback PASSED: %0d beats matched",
+             $time, wr_q.size());
+
+    // -------------------------------------------------------------------
+    // Pass 2: large-buffer backpressure test. Backdoor-preload a known
+    // pattern into the AXI RAM (mem is indexed by beat = byte_addr>>2), then
+    // play BIG_BEATS beats. With BIG_BEATS > TX-FIFO depth the reader must
+    // throttle on tx_full and stream at the I2S frame rate; sts_underflow
+    // must stay 0 (read-ahead kept the TX FIFO fed).
+    // -------------------------------------------------------------------
+    for (int k = 0; k < BIG_BEATS; k++)
+      axi_ram.mem[k] = {~k[15:0], k[15:0]};   // unique L/R word per beat
+
+    rd_q.delete();                            // only watch this pass's reads
+    cpu_wr_reg(REG_TX_ADDR_LO, 32'h0);
+    cpu_wr_reg(REG_TX_ADDR_HI, 32'h0);
+    cpu_wr_reg(REG_TX_BYTES,   32'(BIG_BEATS*4));
+    cpu_wr_reg(REG_TX_START,   32'h1);
+    wait_done(REG_TX_STAT);                   // wait sts_done
+
+    if (test_reg[3]) begin                    // bit 3 = sts_underflow
+      $display("[%0t] ERROR: backpressure pass underflowed - read-ahead could not keep the TX FIFO fed", $time);
+      $stop;
+    end
+    cpu_rd_reg_verify(REG_TX_BYTES_READ, 32'(BIG_BEATS*4));
+
+    if (rd_q.size() != BIG_BEATS) begin
+      $display("ERROR: beat-count mismatch  exp=%0d rd=%0d",
+               BIG_BEATS, rd_q.size());
+      $stop;
+    end
+    foreach (rd_q[i]) begin
+      if (rd_q[i] !== {~i[15:0], i[15:0]}) begin
+        $display("ERROR: beat %0d mismatch  exp=%h read=%h",
+                 i, {~i[15:0], i[15:0]}, rd_q[i]);
+        $stop;
+      end
+    end
+    $display("[%0t] Pass 2 (backpressure) PASSED: %0d beats matched, no underflow",
+             $time, BIG_BEATS);
+
+    // Let the TX FIFO drain out the serializer before ending.
+    repeat (20000) @(posedge AIC_mclk_o);
     $stop;
   end
 
@@ -136,22 +243,22 @@ module tb_aic3104;
      .s_axi_bresp(m_axi_bresp),
      .s_axi_bvalid(m_axi_bvalid),
      .s_axi_bready(m_axi_bready),
-     .s_axi_arid(),
-     .s_axi_araddr(),
-     .s_axi_arlen(),
-     .s_axi_arsize(),
-     .s_axi_arburst(),
-     .s_axi_arlock(),
-     .s_axi_arcache(),
-     .s_axi_arprot(),
-     .s_axi_arvalid(),
-     .s_axi_arready(),
-     .s_axi_rid(),
-     .s_axi_rdata(),
-     .s_axi_rresp(),
-     .s_axi_rlast(),
-     .s_axi_rvalid(),
-     .s_axi_rready()
+     .s_axi_arid(m_axi_arid),
+     .s_axi_araddr(m_axi_araddr),
+     .s_axi_arlen(m_axi_arlen),
+     .s_axi_arsize(m_axi_arsize),
+     .s_axi_arburst(m_axi_arburst),
+     .s_axi_arlock(m_axi_arlock),
+     .s_axi_arcache(m_axi_arcache),
+     .s_axi_arprot(m_axi_arprot),
+     .s_axi_arvalid(m_axi_arvalid),
+     .s_axi_arready(m_axi_arready),
+     .s_axi_rid(),                    // DUT read master has no RID; ignore
+     .s_axi_rdata(m_axi_rdata),
+     .s_axi_rresp(m_axi_rresp),
+     .s_axi_rlast(m_axi_rlast),
+     .s_axi_rvalid(m_axi_rvalid),
+     .s_axi_rready(m_axi_rready)
      );
 
     // Write a register in the design
@@ -189,6 +296,19 @@ module tb_aic3104;
       $display("RD: REG %h: %h", addr, s_axi_rdata);
     end
   endtask // cpu_rd_reg
+
+  // Wait for a freshly-started engine to finish. sts_done (bit 31) is sticky:
+  // it stays high from the PREVIOUS transfer until the next start clears it, so
+  // polling it immediately after writing START can fall through on the stale
+  // value. Wait for done to drop (new transfer accepted) before waiting for it
+  // to rise again. Leaves test_reg holding the final status (done=1, busy=0).
+  task automatic wait_done;
+    input [11:0] stat_addr;
+    begin
+      do cpu_rd_reg(stat_addr); while ( test_reg[31]);   // stale done clears
+      do cpu_rd_reg(stat_addr); while (~test_reg[31]);   // new transfer done
+    end
+  endtask // wait_done
 
   task automatic cpu_rd_reg_verify;
     input [11:0] addr;

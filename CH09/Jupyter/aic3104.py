@@ -222,8 +222,13 @@ class AIC3104:
         # ---- serial audio interface: I2S, slave, word length ----
         self.w(R_SERIAL_A, 0x00)             # BCLK & WCLK = inputs (codec slave)
         wl = {16: 0b00, 20: 0b01, 24: 0b10, 32: 0b11}.get(word_len, 0b00)
+        # NOTE: 0xF0 = left-justified (D7:6=11) + 32-bit word (D5:4=11), NOT I2S.
+        # This matches the FPGA framing in aic3104_dma.sv, which drives the MSB
+        # on the first BCLK edge after WS (left-justified style) using 32-bit/
+        # 64-BCLK slots and only uses the top 16 bits of each slot. For a true
+        # I2S, 16-bit codec interface instead, use the commented line below.
         #self.w(R_SERIAL_B, wl << 4)          # I2S (D7:6=00) + word length (D5:4)
-        self.w(R_SERIAL_B, 0xF0)          # I2S (D7:6=00) + word length (D5:4)
+        self.w(R_SERIAL_B, 0xF0)          # left-justified (D7:6=11) + 32-bit (D5:4=11)
         self.w(R_SERIAL_C, 0x00)             # no data offset
         self.w(R_DIGITAL_FILT, 0x00)         # ADC HPF off (0x50 to enable L&R)
 

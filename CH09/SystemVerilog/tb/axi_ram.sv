@@ -90,6 +90,11 @@ module axi_ram
 parameter VALID_ADDR_WIDTH = ADDR_WIDTH - $clog2(STRB_WIDTH);
 parameter WORD_WIDTH = STRB_WIDTH;
 parameter WORD_SIZE = DATA_WIDTH/WORD_WIDTH;
+// Physical storage depth. The address space is 2**VALID_ADDR_WIDTH words, but on
+// a wide (e.g. 40-bit) bus that is far too large to allocate -- xsim's sparse
+// handling silently drops writes. Cap the backing array and index it by the low
+// word-address bits; testbenches only touch a small buffer near the base.
+localparam int MEM_AW = (VALID_ADDR_WIDTH > 16) ? 16 : VALID_ADDR_WIDTH;
 
 // bus width assertions
 initial begin
@@ -147,7 +152,7 @@ reg s_axi_rlast_pipe_reg = 1'b0;
 reg s_axi_rvalid_pipe_reg = 1'b0;
 
 // (* RAM_STYLE="BLOCK" *)
-reg [DATA_WIDTH-1:0] mem[(2**VALID_ADDR_WIDTH)-1:0];
+reg [DATA_WIDTH-1:0] mem[(2**MEM_AW)-1:0];
 
 wire [VALID_ADDR_WIDTH-1:0] s_axi_awaddr_valid = s_axi_awaddr >> (ADDR_WIDTH - VALID_ADDR_WIDTH);
 wire [VALID_ADDR_WIDTH-1:0] s_axi_araddr_valid = s_axi_araddr >> (ADDR_WIDTH - VALID_ADDR_WIDTH);
@@ -273,7 +278,7 @@ always @(posedge clk) begin
 
     for (i = 0; i < WORD_WIDTH; i = i + 1) begin
         if (mem_wr_en & s_axi_wstrb[i]) begin
-            mem[write_addr_valid][WORD_SIZE*i +: WORD_SIZE] <= s_axi_wdata[WORD_SIZE*i +: WORD_SIZE];
+            mem[write_addr_valid[MEM_AW-1:0]][WORD_SIZE*i +: WORD_SIZE] <= s_axi_wdata[WORD_SIZE*i +: WORD_SIZE];
         end
     end
 
@@ -305,7 +310,7 @@ always @* begin
 
     case (read_state_reg)
         READ_STATE_IDLE: begin
-            if (s_axi_arvalid && ($urandom_range(0,1) || RANDOM_READY)) begin
+            if (s_axi_arvalid && ($urandom_range(0,1) || ~RANDOM_READY)) begin
               s_axi_arready_next = 1'b1;
                 read_id_next = s_axi_arid;
                 read_addr_next = s_axi_araddr;
@@ -355,7 +360,7 @@ always @(posedge clk) begin
     s_axi_rvalid_reg <= s_axi_rvalid_next;
 
     if (mem_rd_en) begin
-        s_axi_rdata_reg <= mem[read_addr_valid];
+        s_axi_rdata_reg <= mem[read_addr_valid[MEM_AW-1:0]];
     end
 
     if (!s_axi_rvalid_pipe_reg || s_axi_rready) begin

@@ -85,9 +85,9 @@ module axi_dma_reader #(
     output logic                          m_axi_rready,
 
     // ---- AXI4-Stream master output ----
-    output logic [AXI_DATA_WIDTH-1:0]     m_axis_tdata,
-    output logic                          m_axis_tvalid,
-    input  logic                          m_axis_tready,
+    (* mark_debug = "true" *) output logic [AXI_DATA_WIDTH-1:0]     m_axis_tdata,
+    (* mark_debug = "true" *) output logic                          m_axis_tvalid,
+    (* mark_debug = "true" *) input  logic                          m_axis_tready,
     output logic                          m_axis_tlast
 );
 

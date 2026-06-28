@@ -24,7 +24,7 @@ entity calculator is
    s_axi_wstrb   : in     std_logic_vector(3 downto 0);
    s_axi_wvalid  : in     std_logic;
    s_axi_wready  : out    std_logic;
-   s_axi_bresp   : out    std_logic_vector(11 downto 0);
+   s_axi_bresp   : out    std_logic_vector(1 downto 0);
    s_axi_bvalid  : out    std_logic;
    s_axi_bready  : in     std_logic;
    s_axi_araddr  : in     std_logic_vector(15 downto 0);
@@ -41,10 +41,10 @@ end entity calculator;
 architecture rtl of calculator is
 
   constant BC : natural := natural(ceil(log2(real(BITS))));
-  constant REG_A   : std_logic_vector(7 downto 0) := x"0";
-  constant REG_B   : std_logic_vector(7 downto 0) := x"4";
-  constant REG_C   : std_logic_vector(7 downto 0) := x"8";
-  constant REG_REM : std_logic_vector(7 downto 0) := x"C";
+  constant REG_A   : std_logic_vector(7 downto 0) := x"00";
+  constant REG_B   : std_logic_vector(7 downto 0) := x"04";
+  constant REG_C   : std_logic_vector(7 downto 0) := x"08";
+  constant REG_REM : std_logic_vector(7 downto 0) := x"0C";
   constant REG_OP  : std_logic_vector(7 downto 0) := x"10";
   constant REG_INT : std_logic_vector(7 downto 0) := x"14";
 
@@ -273,6 +273,7 @@ begin
           if interrupt_out_reg = '1' and axil_din(0) = '1' and axil_be(0) = '1' then
             interrupt_out <= '0';
           end if;
+        when others => null;
       end case;
     end if;
   end process;
@@ -288,6 +289,7 @@ begin
       when REG_REM => read_data             <= rem_out;
       when REG_OP  => read_data(1 downto 0) <= op_store;
       when REG_INT => read_data(0)          <= interrupt_out_reg;
+      when others  => null;
     end case;
   end process;
 
