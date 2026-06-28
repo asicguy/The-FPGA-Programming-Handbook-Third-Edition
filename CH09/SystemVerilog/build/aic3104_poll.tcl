@@ -163,9 +163,9 @@ wait_on_run -timeout 150 synth_1
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run -timeout 150 impl_1
 
-set out_file_name "$orig_proj_name"
+#set out_file_name "$orig_proj_name"
 
-cp ./aic3104_poll/aic3104_poll.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
-cp ./aic3104_poll/aic3104_poll.runs/impl_1/hw_wrapper.bit .
+sh cp ./aic3104_poll/aic3104_poll.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
+sh cp ./aic3104_poll/aic3104_poll.runs/impl_1/hw_wrapper.bit .
 
 }

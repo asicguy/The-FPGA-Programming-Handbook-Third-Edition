@@ -6,7 +6,7 @@ if { [info exists ::origin_dir_loc] } {
 }
 
 # Set the project name
-set _xil_proj_name_ "aic3104_poll"
+set _xil_proj_name_ "aic3104_dma"
 
 # Use project name variable, if specified in the tcl shell
 if { [info exists ::user_project_name] } {
@@ -14,7 +14,7 @@ if { [info exists ::user_project_name] } {
 }
 
 variable script_file
-set script_file "aic3104_poll.tcl"
+set script_file "aic3104_dma.tcl"
 
 # Help information for this script
 proc print_help {} {
@@ -117,13 +117,12 @@ if { $obj != {} } {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
   set files [list \
- "[file normalize "$origin_dir/../hdl/aic3104.sv"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_wrapper.v"]"\
+ "[file normalize "$origin_dir/../hdl/aic3104_dma_wrapper.v"]"\
  "[file normalize "$origin_dir/../hdl/aic3104_dma.sv"]"\
  "[file normalize "$origin_dir/../hdl/axi_dma_reader.sv"]"\
  "[file normalize "$origin_dir/../hdl/axi_dma_writer.sv"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_dma_wrapper.v"]"\
- "[file normalize "$origin_dir/../../../xdc/zu3.xdc"]"\
+ "[file normalize "$origin_dir/../hdl/aic3104_dma_top.v"]"\
+ "[file normalize "$origin_dir/../xdc/constraint.xdc"]"\
   ]
 add_files -norecurse -fileset $obj $files
 
@@ -133,17 +132,19 @@ if { $argv != "sim" } {
 set obj [get_filesets constrs_1]
 
 # Add/Import constrs file and set constrs file properties
-#set file "[file normalize "$origin_dir/../../../xdc/zu3.xdc"]"
-#set file_added [add_files -norecurse -fileset $obj [list $file]]
-#set file "$origin_dir/src/xdc/zu3.xdc"
-#set file [file normalize $file]
-#set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
-#set_property -name "file_type" -value "XDC" -objects $file_obj
+set file "[file normalize "$origin_dir/../../../xdc/zu3.xdc"]"
+set file_added [add_files -norecurse -fileset $obj [list $file]]
+set file "$origin_dir/../../../xdc/zu3.xdc"
+set file [file normalize $file]
+set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
+set_property -name "file_type" -value "XDC" -objects $file_obj
 
-source $origin_dir/../bd/aic3104_poll.tcl
-close_bd_design [get_bd_designs hw]
-set_property GENERATE_SYNTH_CHECKPOINT 0 [get_files -all "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.srcs/sources_1/bd/hw/hw.bd"]
-
+source $origin_dir/../bd/aic3104_dma.tcl
+#close_bd_design [get_bd_designs hw]
+set_property GENERATE_SYNTH_CHECKPOINT 1 [get_files -all "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.srcs/sources_1/bd/hw/hw.bd"]
+#make_wrapper -files [get_files "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.srcs/sources_1/bd/hw/hw.bd"] -top
+#update_compile_order -fileset sources_1
+#add_files -norecurse [get_files "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.gen/sources_1/bd/hw/hdl/hw_wrapper.v"]
 update_compile_order -fileset sources_1
 
 # Set 'sources_1' fileset properties
@@ -164,6 +165,9 @@ wait_on_run -timeout 150 synth_1
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 wait_on_run -timeout 150 impl_1
 
-set out_file_name "$orig_proj_name"
+#set out_file_name "$orig_proj_name"
+
+sh cp ./aic3104_dma/aic3104_dma.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
+sh cp ./aic3104_dma/aic3104_dma.runs/impl_1/hw_wrapper.bit .
 
 }

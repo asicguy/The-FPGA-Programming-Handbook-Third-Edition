@@ -247,10 +247,17 @@ module aic3104_poll
     rx_ctrl_sync <= {rx_ctrl_sync[0], rx_ctrl[0]};
     i2s_counter  <= i2s_counter + 1; // free running counter for clock gen
     rx_push      <= &i2s_counter;
-    if (i2s_counter[1:0] == 2'b10) begin
-      i2s_sdata_o              <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
+    // Drive TX (codec DIN) early in the SCLK-high phase so the data is stable
+    // before the codec latches it on the next SCLK rising edge.
+    if (i2s_counter[1:0] == 2'b10)
+      i2s_sdata_o <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
+    // Sample RX (codec DOUT) LATE in the SCLK-high phase (one MCLK later). At
+    // ==2'b10 the sample sits too close to the SCLK rising edge, leaving too
+    // little margin for the codec output + round-trip delay, so the first
+    // captured bit (the sample MSB) is missed -- shifting every sample down one
+    // bit and folding the sign at each zero crossing (capture -> clipping/static).
+    if (i2s_counter[1:0] == 2'b11)
       rx_din[{i2s_counter[7], 5'(31-i2s_counter[6:2])}] <= i2s_sdata_i;
-    end
   end
   assign rx_push_gate = rx_push & rx_ctrl_sync[1];
   assign tx_pop = rx_push;

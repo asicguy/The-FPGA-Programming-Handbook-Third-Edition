@@ -332,10 +332,18 @@ module aic3104_dma
   always @(posedge AIC_mclk_o) begin
     i2s_counter <= i2s_counter + 1; // free running counter for clock gen
     rx_push     <= &i2s_counter;
-    if (i2s_counter[1:0] == 2'b10) begin
-      i2s_sdata_o              <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
+    // Drive TX (codec DIN) early in the SCLK-high phase so the data is stable
+    // before the codec latches it on the next SCLK rising edge.
+    if (i2s_counter[1:0] == 2'b10)
+      i2s_sdata_o <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
+    // Sample RX (codec DOUT) LATE in the SCLK-high phase (one MCLK later than
+    // the TX drive). Sampling at ==2'b10 sits too close to the SCLK rising edge
+    // and leaves too little margin for the codec output + round-trip delay, so
+    // the first captured bit (the sample MSB) is missed. That shifts every
+    // sample down one bit and folds the sign at each zero crossing -- captured
+    // audio comes back as clipping/static. ==2'b11 gives the extra setup margin.
+    if (i2s_counter[1:0] == 2'b11)
       rx_din[{i2s_counter[7], 5'(31-i2s_counter[6:2])}] <= i2s_sdata_i;
-    end
   end
 
   assign tx_pop = rx_push;

@@ -9,7 +9,7 @@ module aic3104_dma_wrapper
    )
   (
    // AXI lite interface for register acceess
-    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 CLK.s_axi_aclk CLK" *) (* X_INTERFACE_PARAMETER = "XIL_INTERFACENAME CLK.s_axi_aclk, ASSOCIATED_BUSIF s_axi:m_axi, CLK_DOMAIN s_axi_aclk, FREQ_HZ 95454536, FREQ_TOLERANCE_HZ -1, INSERT_VIP 0, PHASE 0" *)
+    (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 CLK.s_axi_aclk CLK" *) (* X_INTERFACE_PARAMETER = "XIL_INTERFACENAME CLK.s_axi_aclk, ASSOCIATED_BUSIF s_axi:m_axi, CLK_DOMAIN s_axi_aclk, FREQ_HZ 96968727, FREQ_TOLERANCE_HZ -1, INSERT_VIP 0, PHASE 0" *)
    input                         s_axi_aclk,
    input                         s_axi_aresetn,
    input [21:0]                  s_axi_awaddr,

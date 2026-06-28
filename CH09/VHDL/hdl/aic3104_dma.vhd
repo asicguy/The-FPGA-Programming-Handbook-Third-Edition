@@ -467,6 +467,8 @@ begin
         rx_push <= '0';
       end if;
 
+      -- Drive TX (codec DIN) early in the SCLK-high phase so the data is stable
+      -- before the codec latches it on the next SCLK rising edge.
       if i2s_counter(1 downto 0) = "10" then
         if i2s_counter(7) = '1' then
           base := 32;
@@ -475,6 +477,20 @@ begin
         end if;
         idx := base + (31 - to_integer(i2s_counter(6 downto 2)));
         i2s_sdata_o_i <= tx_dout(idx);
+      end if;
+      -- Sample RX (codec DOUT) LATE in the SCLK-high phase (one MCLK later than
+      -- the TX drive). Sampling at "10" sits too close to the SCLK rising edge
+      -- and leaves too little margin for the codec output + round-trip delay, so
+      -- the first captured bit (the sample MSB) is missed -- shifting every
+      -- sample down one bit and folding the sign at each zero crossing (capture
+      -- -> clipping/static). "11" gives the extra setup margin.
+      if i2s_counter(1 downto 0) = "11" then
+        if i2s_counter(7) = '1' then
+          base := 32;
+        else
+          base := 0;
+        end if;
+        idx := base + (31 - to_integer(i2s_counter(6 downto 2)));
         rx_din(idx)   <= i2s_sdata_i;
       end if;
     end if;
