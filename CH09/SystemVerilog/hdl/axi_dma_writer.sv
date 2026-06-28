@@ -216,7 +216,6 @@ module axi_dma_writer #(
             m_axi_awlen     <= '0;
             m_axi_awvalid   <= 1'b0;
             m_axi_wvalid    <= 1'b0;
-            m_axi_wlast     <= 1'b0;
             m_axi_bready    <= 1'b0;
             sts_busy        <= 1'b0;
             sts_done        <= 1'b0;
@@ -264,7 +263,6 @@ module axi_dma_writer #(
                     if (m_axi_awready && m_axi_awvalid) begin
                         m_axi_awvalid <= 1'b0;
                         m_axi_wvalid  <= 1'b1;
-                        m_axi_wlast   <= (burst_beats == 9'd1);
                         state         <= S_DATA;
                     end
                 end
@@ -273,14 +271,14 @@ module axi_dma_writer #(
                 S_DATA: begin
                     // Gate wvalid on FIFO occupancy as a safety net; by
                     // construction the FIFO already holds >= burst_beats beats.
+                    // wlast is driven combinationally (see below) so it lines up
+                    // with the last beat's data instead of one cycle late.
                     m_axi_wvalid <= ~fifo_empty;
-                    m_axi_wlast  <= ((beat_idx == burst_beats - 9'd1) & ~fifo_empty);
 
                     if (m_axi_wvalid && m_axi_wready) begin
                         if (beat_idx == burst_beats - 9'd1) begin
                             // Last beat accepted -> close out the W channel.
                             m_axi_wvalid <= 1'b0;
-                            m_axi_wlast  <= 1'b0;
                             m_axi_bready <= 1'b1;
                             state        <= S_RESP;
                         end else begin
@@ -317,6 +315,11 @@ module axi_dma_writer #(
     // FIFO read data drives the W channel; pop on accepted W beat.
     assign m_axi_wdata = fifo_mem[rd_ptr];
     assign fifo_pop    = (state == S_DATA) & m_axi_wvalid & m_axi_wready;
+
+    // wlast tracks the beat currently being presented, so it asserts on the
+    // same cycle as the last beat's data (while wvalid is high) rather than one
+    // cycle late. burst_beats >= 1 whenever wvalid is high in S_DATA.
+    assign m_axi_wlast = (state == S_DATA) & m_axi_wvalid & (beat_idx == burst_beats - 9'd1);
 
     assign sts_bytes_written = bytes_committed;
 

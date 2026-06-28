@@ -64,14 +64,18 @@ module aic3104_poll
   logic        tx_empty, rx_empty;
   logic        rx_pop;
   logic        tx_full;
-  (* mark_debug = "true" *)logic [31:0] rx_din;
+  (* mark_debug = "true" *)logic [63:0] rx_din;
+  logic [63:0] tx_dout;
   logic        rx_push_gate;
+  (* async_reg = "true" *) logic [1:0] rst_sync;
+  (* async_reg = "true" *) logic [1:0] rx_ctrl_sync;
 
   // AXI Read Channel
   always @(posedge s_axi_aclk) begin
     s_axi_arready <= '1;
     s_axi_rvalid  <= '0;
     s_axi_rresp   <= '0;
+    rx_pop        <= '0;
 
     case (axil_rd_cs)
       RD_IDLE: begin
@@ -93,6 +97,8 @@ module aic3104_poll
           s_axi_arready <= '1;
           s_axi_rvalid  <= '0;
           axil_rd_cs    <= RD_IDLE;
+          // Pop exactly one RX sample when a REG_RX_DATA read completes.
+          if (rd_addr[11:0] == REG_RX_DATA) rx_pop <= ~rx_empty;
         end
       end
     endcase // case (axil_rd_cs)
@@ -209,7 +215,6 @@ module aic3104_poll
 
   always @(posedge s_axi_aclk) begin
     read_data <= '0;
-    rx_pop    <= '0;
     casez (rd_addr[11:0])
       REG_TX_CTRL:  read_data[7:0] <= tx_ctrl;
       REG_TX_COUNT: read_data[15:0] <= tx_count;
@@ -218,7 +223,6 @@ module aic3104_poll
       REG_RX_COUNT: read_data[15:0] <= rx_count;
       REG_RX_DATA: begin
         read_data <= rx_data;
-        rx_pop <= ~rx_empty;
       end
       REG_RX_STAT: read_data[0] <= rx_empty;
       REG_DEV: read_data        <= "3104";
@@ -234,18 +238,24 @@ module aic3104_poll
     i2s_counter = '0;
   end
 
+  // Match the DMA datapath: 32-bit left-justified slots (top 16 bits carry the
+  // sample), bclk = mclk/4. tx_dout lays the L and R 16-bit samples into
+  // bit-reversed slot positions so a descending counter walks them out MSB-first.
+  assign tx_dout = {tx_data[31:16], 16'b0, tx_data[15:0], 16'b0};
   always @(posedge AIC_mclk_o) begin
-    i2s_counter <= i2s_counter + 1; // free running counter for clock gen
-    rx_push     <= &i2s_counter;
-    if (i2s_counter[2:0] == 3'b100) begin
-      i2s_sdata_o              <= tx_data[{i2s_counter[7], 4'(15-i2s_counter[6:3])}];
-      rx_din[{i2s_counter[7], 4'(15-i2s_counter[6:3])}] <= i2s_sdata_i;
+    rst_sync     <= {rst_sync[0], s_axi_aresetn};
+    rx_ctrl_sync <= {rx_ctrl_sync[0], rx_ctrl[0]};
+    i2s_counter  <= i2s_counter + 1; // free running counter for clock gen
+    rx_push      <= &i2s_counter;
+    if (i2s_counter[1:0] == 2'b10) begin
+      i2s_sdata_o              <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
+      rx_din[{i2s_counter[7], 5'(31-i2s_counter[6:2])}] <= i2s_sdata_i;
     end
   end
-  assign rx_push_gate = rx_push & rx_ctrl[0];
+  assign rx_push_gate = rx_push & rx_ctrl_sync[1];
   assign tx_pop = rx_push;
   assign AIC_lrclk_o = i2s_counter[$left(i2s_counter)];
-  assign AIC_sclk_o = i2s_counter[2];
+  assign AIC_sclk_o = i2s_counter[1];
 
   xpm_fifo_async
     #
@@ -302,12 +312,12 @@ module aic3104_poll
     (
      // Common module ports
      .sleep                ('0),
-     .rst                  (~s_axi_aresetn),
+     .rst                  (~rst_sync[1]),
 
      // Write Domain ports
      .wr_clk               (AIC_mclk_o),
      .wr_en                (rx_push_gate),
-     .din                  (rx_din),
+     .din                  ({rx_din[63:48], rx_din[31:16]}),
      .full                 (),
      .prog_full            (),
      .wr_data_count        (),

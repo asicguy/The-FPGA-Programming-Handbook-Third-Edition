@@ -1,0 +1,9 @@
+# Vitis HLS generated component directories and build outputs
+src/dma_s2mm/
+src/dma_mm2s/
+src/build/
+src/logs/
+build/
+*.log
+*.jou
+.Xil/
