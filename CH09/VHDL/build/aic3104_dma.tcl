@@ -6,7 +6,7 @@ if { [info exists ::origin_dir_loc] } {
 }
 
 # Set the project name
-set _xil_proj_name_ "aic3104_poll"
+set _xil_proj_name_ "aic3104_dma"
 
 # Use project name variable, if specified in the tcl shell
 if { [info exists ::user_project_name] } {
@@ -14,7 +14,7 @@ if { [info exists ::user_project_name] } {
 }
 
 variable script_file
-set script_file "aic3104_poll.tcl"
+set script_file "aic3104_dma.tcl"
 
 # Help information for this script
 proc print_help {} {
@@ -117,10 +117,11 @@ if { $obj != {} } {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
   set files [list \
- "[file normalize "$origin_dir/../hdl/aic3104_poll_wrapper.v"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_poll.sv"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_poll_top.v"]"\
- "[file normalize "$origin_dir/../xdc/constraint.xdc"]"\
+ "[file normalize "$origin_dir/../hdl/aic3104_dma.vhd"]"\
+ "[file normalize "$origin_dir/../hdl/axi_dma_reader.vhd"]"\
+ "[file normalize "$origin_dir/../hdl/axi_dma_writer.vhd"]"\
+ "[file normalize "$origin_dir/../hdl/aic3104_dma_top.v"]"\
+ "[file normalize "$origin_dir/../xdc/constraints.xdc"]"\
   ]
 add_files -norecurse -fileset $obj $files
 
@@ -137,7 +138,7 @@ set file [file normalize $file]
 set file_obj [get_files -of_objects [get_filesets constrs_1] [list "*$file"]]
 set_property -name "file_type" -value "XDC" -objects $file_obj
 
-source $origin_dir/../bd/aic3104_poll.tcl
+source $origin_dir/../bd/aic3104_dma.tcl
 #close_bd_design [get_bd_designs hw]
 set_property GENERATE_SYNTH_CHECKPOINT 1 [get_files -all "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.srcs/sources_1/bd/hw/hw.bd"]
 #make_wrapper -files [get_files "$origin_dir/${_xil_proj_name_}/${_xil_proj_name_}.srcs/sources_1/bd/hw/hw.bd"] -top
@@ -165,7 +166,7 @@ wait_on_run -timeout 150 impl_1
 
 #set out_file_name "$orig_proj_name"
 
-exec cp ./aic3104_poll/aic3104_poll.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
-exec cp ./aic3104_poll/aic3104_poll.runs/impl_1/hw_wrapper.bit .
+exec cp ./aic3104_dma/aic3104_dma.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
+exec cp ./aic3104_dma/aic3104_dma.runs/impl_1/hw_wrapper.bit .
 
 }

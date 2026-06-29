@@ -117,10 +117,9 @@ if { $obj != {} } {
 # Set 'sources_1' fileset object
 set obj [get_filesets sources_1]
   set files [list \
- "[file normalize "$origin_dir/../hdl/aic3104_poll_wrapper.v"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_poll.sv"]"\
- "[file normalize "$origin_dir/../hdl/aic3104_poll_top.v"]"\
- "[file normalize "$origin_dir/../xdc/constraint.xdc"]"\
+ "[file normalize "$origin_dir/../hdl/aic3104_poll.vhd"]"\
+ "[file normalize "$origin_dir/../../SystemVerilog/hdl/aic3104_poll_top.v"]"\
+ "[file normalize "$origin_dir/../xdc/constraints.xdc"]"\
   ]
 add_files -norecurse -fileset $obj $files
 
