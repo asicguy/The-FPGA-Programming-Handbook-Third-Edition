@@ -39,6 +39,7 @@ module aic3104_poll
   localparam            REG_DEV      = 12'h200;
   localparam            REG_VER      = 12'h204;
   localparam            REG_INT      = 12'h208;
+  localparam            REG_CFG      = 12'h20c; // [2:0]=rx sample delay (MCLK ticks)
 
   typedef enum bit [1:0] {RD_IDLE, RD_WAIT, RD_W4RREADY} axil_rd_cs_t;
   typedef enum bit [1:0] {WR_IDLE, WR_W4ADDR, WR_W4DATA, WR_BRESP} axil_cs_t;
@@ -56,6 +57,11 @@ module aic3104_poll
   logic [15:0] axil_addr;
   logic        set_int;
   logic [7:0]  tx_ctrl = '0, rx_ctrl = '0;
+  // RX capture sample-delay (board-specific codec DOUT round-trip alignment),
+  // set via REG_CFG in the AXI domain and double-flopped into the mclk domain.
+  logic [2:0]  rx_dly = '0;
+  (* async_reg = "true" *) logic [2:0] rx_dly_meta, rx_dly_sync;
+  logic [7:0]  csel;
   logic [15:0] tx_count, rx_count;
   (* mark_debug = "true" *)logic [31:0] tx_data, rx_data;
   (* mark_debug = "true" *)logic        rx_push, tx_pop;
@@ -209,6 +215,7 @@ module aic3104_poll
         REG_RX_STAT: begin
         end
         REG_INT: if (interrupt_out & axil_din[0] & axil_be[0]) interrupt_out <= '0;
+        REG_CFG: if (axil_be[0]) rx_dly <= axil_din[2:0];
       endcase // casez (axil_addr[7:0])
     end // if (axil_we)
   end // always @ (posedge s_axi_aclk)
@@ -228,6 +235,7 @@ module aic3104_poll
       REG_DEV: read_data        <= "3104";
       REG_VER: read_data        <= 1;
       REG_INT: read_data[0]     <= interrupt_out;
+      REG_CFG: read_data[2:0]   <= rx_dly;
     endcase // casez (rd_addr[7:0])
   end
 
@@ -245,19 +253,24 @@ module aic3104_poll
   always @(posedge AIC_mclk_o) begin
     rst_sync     <= {rst_sync[0], s_axi_aresetn};
     rx_ctrl_sync <= {rx_ctrl_sync[0], rx_ctrl[0]};
+    rx_dly_meta  <= rx_dly;          // double-flop quasi-static rx_dly into mclk
+    rx_dly_sync  <= rx_dly_meta;
     i2s_counter  <= i2s_counter + 1; // free running counter for clock gen
     rx_push      <= &i2s_counter;
-    // Drive TX (codec DIN) early in the SCLK-high phase so the data is stable
-    // before the codec latches it on the next SCLK rising edge.
+    // Drive TX (codec DIN) in the SCLK-high phase so the data is stable before
+    // the codec latches it on the next SCLK rising edge.
     if (i2s_counter[1:0] == 2'b10)
       i2s_sdata_o <= tx_dout[{i2s_counter[7], 5'(31-i2s_counter[6:2])}];
-    // Sample RX (codec DOUT) LATE in the SCLK-high phase (one MCLK later). At
-    // ==2'b10 the sample sits too close to the SCLK rising edge, leaving too
-    // little margin for the codec output + round-trip delay, so the first
-    // captured bit (the sample MSB) is missed -- shifting every sample down one
-    // bit and folding the sign at each zero crossing (capture -> clipping/static).
-    if (i2s_counter[1:0] == 2'b11)
-      rx_din[{i2s_counter[7], 5'(31-i2s_counter[6:2])}] <= i2s_sdata_i;
+    // Sample RX (codec DOUT). The codec's DOUT arrives delayed by the BCLK
+    // round-trip + codec output (Tco) delay, which is board-specific and cannot
+    // be fixed in the RTL/sim. rx_dly (REG_CFG[2:0], in MCLK ticks) slides the
+    // whole sampling grid later -- both the phase and the bit-slot index shift
+    // together, so the captured 16-bit sample stays aligned. Sweep rx_dly 0..7
+    // on hardware and keep the value that gives clean audio (rx_dly=0 == the
+    // original "sample at SCLK-high" timing).
+    csel = i2s_counter - {5'b0, rx_dly_sync};
+    if (csel[1:0] == 2'b10)
+      rx_din[{csel[7], 5'(31-csel[6:2])}] <= i2s_sdata_i;
   end
   assign rx_push_gate = rx_push & rx_ctrl_sync[1];
   assign tx_pop = rx_push;

@@ -55,8 +55,8 @@ entity aic3104_poll is
     AIC_mclk_o  : in  std_logic;
     AIC_lrclk_o : out std_logic;
     AIC_sclk_o  : out std_logic;
-    i2s_sdata_i : in  std_logic;
-    i2s_sdata_o : out std_logic
+    AIC_sdata_i : in  std_logic;
+    AIC_sdata_o : out std_logic
   );
 end entity aic3104_poll;
 
@@ -74,6 +74,7 @@ architecture rtl of aic3104_poll is
   constant REG_DEV      : std_logic_vector(11 downto 0) := x"200";
   constant REG_VER      : std_logic_vector(11 downto 0) := x"204";
   constant REG_INT      : std_logic_vector(11 downto 0) := x"208";
+  constant REG_CFG      : std_logic_vector(11 downto 0) := x"20C";  -- [2:0]=rx sample delay
 
   type axil_rd_cs_t is (RD_IDLE, RD_WAIT, RD_W4RREADY);
   type axil_cs_t is (WR_IDLE, WR_W4ADDR, WR_W4DATA, WR_RESP);
@@ -128,6 +129,12 @@ architecture rtl of aic3104_poll is
   -- CDC synchronizers into the AIC mclk domain
   signal rst_sync     : std_logic_vector(1 downto 0) := (others => '0');
   signal rx_ctrl_sync : std_logic_vector(1 downto 0) := (others => '0');
+
+  -- RX capture sample-delay (board-specific codec DOUT round-trip alignment),
+  -- set via REG_CFG in the AXI domain and double-flopped into the mclk domain.
+  signal rx_dly      : std_logic_vector(2 downto 0) := "000";
+  signal rx_dly_meta : std_logic_vector(2 downto 0) := "000";
+  signal rx_dly_sync : std_logic_vector(2 downto 0) := "000";
 
 begin
 
@@ -292,6 +299,10 @@ begin
             if interrupt_i = '1' and axil_din(0) = '1' and axil_be(0) = '1' then
               interrupt_i <= '0';
             end if;
+          when REG_CFG =>
+            if axil_be(0) = '1' then
+              rx_dly <= axil_din(2 downto 0);
+            end if;
           when others =>
             null;
         end case;
@@ -319,6 +330,7 @@ begin
         when REG_DEV      => read_data              <= x"33313034";   -- "3104"
         when REG_VER      => read_data              <= x"00000001";
         when REG_INT      => read_data(0)           <= interrupt_i;
+        when REG_CFG      => read_data(2 downto 0)  <= rx_dly;
         when others       => null;
       end case;
     end if;
@@ -332,10 +344,13 @@ begin
   i2s : process (AIC_mclk_o)
     variable base : integer range 0 to 32;
     variable idx  : integer range 0 to 63;
+    variable csel : unsigned(7 downto 0);
   begin
     if rising_edge(AIC_mclk_o) then
       rst_sync     <= rst_sync(0) & s_axi_aresetn;
       rx_ctrl_sync <= rx_ctrl_sync(0) & rx_ctrl(0);
+      rx_dly_meta  <= rx_dly;          -- double-flop quasi-static rx_dly into mclk
+      rx_dly_sync  <= rx_dly_meta;
       i2s_counter  <= i2s_counter + 1;
 
       if i2s_counter = x"FF" then
@@ -344,7 +359,7 @@ begin
         rx_push <= '0';
       end if;
 
-      -- Drive TX (codec DIN) early in the SCLK-high phase so the data is stable
+      -- Drive TX (codec DIN) in the SCLK-high phase so the data is stable
       -- before the codec latches it on the next SCLK rising edge.
       if i2s_counter(1 downto 0) = "10" then
         if i2s_counter(7) = '1' then
@@ -355,25 +370,27 @@ begin
         idx := base + (31 - to_integer(i2s_counter(6 downto 2)));
         i2s_sdata_o_i <= tx_dout(idx);
       end if;
-      -- Sample RX (codec DOUT) LATE in the SCLK-high phase (one MCLK later). At
-      -- "10" the sample sits too close to the SCLK rising edge, leaving too
-      -- little margin for the codec output + round-trip delay, so the first
-      -- captured bit (the sample MSB) is missed -- shifting every sample down
-      -- one bit and folding the sign at each zero crossing (capture ->
-      -- clipping/static). "11" gives the extra setup margin.
-      if i2s_counter(1 downto 0) = "11" then
-        if i2s_counter(7) = '1' then
+      -- Sample RX (codec DOUT). The codec's DOUT arrives delayed by the BCLK
+      -- round-trip + codec output (Tco) delay, which is board-specific and
+      -- cannot be fixed in the RTL/sim. rx_dly (REG_CFG[2:0], in MCLK ticks)
+      -- slides the whole sampling grid later -- both the phase and the bit-slot
+      -- index move together, so the captured 16-bit sample stays aligned. Sweep
+      -- rx_dly 0..7 on hardware and keep the value that gives clean audio
+      -- (rx_dly = 0 reproduces the original "sample at SCLK-high" timing).
+      csel := i2s_counter - resize(unsigned(rx_dly_sync), 8);
+      if csel(1 downto 0) = "10" then
+        if csel(7) = '1' then
           base := 32;
         else
           base := 0;
         end if;
-        idx := base + (31 - to_integer(i2s_counter(6 downto 2)));
-        rx_din(idx)   <= i2s_sdata_i;
+        idx := base + (31 - to_integer(csel(6 downto 2)));
+        rx_din(idx) <= AIC_sdata_i;
       end if;
     end if;
   end process;
 
-  i2s_sdata_o  <= i2s_sdata_o_i;
+  AIC_sdata_o  <= i2s_sdata_o_i;
   rx_push_gate <= rx_push and rx_ctrl_sync(1);
   tx_pop       <= rx_push;
   AIC_lrclk_o  <= i2s_counter(7);

@@ -32,6 +32,7 @@ architecture sim of tb_capcheck is
   constant REG_RX_BYTES   : std_logic_vector(11 downto 0) := x"108";
   constant REG_RX_START   : std_logic_vector(11 downto 0) := x"10C";
   constant REG_RX_STAT    : std_logic_vector(11 downto 0) := x"114";
+  constant REG_CFG        : std_logic_vector(11 downto 0) := x"20C";
 
   type word_arr_t is array (0 to 511) of std_logic_vector(31 downto 0);
 
@@ -90,8 +91,9 @@ architecture sim of tb_capcheck is
   signal i2s_sdata_i   : std_logic;
   signal i2s_sdata_o   : std_logic;
 
-  signal wr_q   : word_arr_t;
-  signal wr_cnt : natural := 0;
+  signal wr_q    : word_arr_t;
+  signal wr_cnt  : natural := 0;
+  signal mon_clr : std_logic := '0';
 begin
   s_axi_aclk <= not s_axi_aclk after 10 ns;
   AIC_mclk_o <= not AIC_mclk_o after 41 ns;
@@ -119,7 +121,7 @@ begin
       m_axi_rdata=>m_axi_rdata, m_axi_rresp=>m_axi_rresp, m_axi_rlast=>m_axi_rlast,
       m_axi_rvalid=>m_axi_rvalid, m_axi_rready=>m_axi_rready,
       interrupt_out=>interrupt_out, AIC_mclk_o=>AIC_mclk_o, AIC_lrclk_o=>AIC_lrclk_o,
-      AIC_sclk_o=>AIC_sclk_o, i2s_sdata_i=>i2s_sdata_i, i2s_sdata_o=>i2s_sdata_o);
+      AIC_sclk_o=>AIC_sclk_o, AIC_sdata_i=>i2s_sdata_i, AIC_sdata_o=>i2s_sdata_o);
 
   axi_ram_i : entity work.axi_ram
     generic map (DATA_WIDTH=>AXI_DATA_WIDTH, ADDR_WIDTH=>AXI_ADDR_WIDTH, ID_WIDTH=>AXI_ID_WIDTH, MEM_AW=>MEM_AW)
@@ -142,7 +144,7 @@ begin
   monitor : process (s_axi_aclk)
   begin
     if rising_edge(s_axi_aclk) then
-      if s_axi_aresetn = '0' then
+      if s_axi_aresetn = '0' or mon_clr = '1' then
         wr_cnt <= 0;
       elsif m_axi_wvalid = '1' and m_axi_wready = '1' and wr_cnt < NFRAMES then
         wr_q(wr_cnt) <= m_axi_wdata;
@@ -173,6 +175,8 @@ begin
       loop wait until rising_edge(s_axi_aclk); exit when s_axi_rvalid = '1'; end loop;
       s_axi_rready <= '0'; test_reg := s_axi_rdata;
     end procedure;
+    variable best_dly : integer := -1;
+    variable best_max : integer := integer'high;
   begin
     rst_n <= '1'; s_axi_aresetn <= '1';
     wait until rising_edge(AIC_mclk_o); rst_n <= '0';
@@ -183,34 +187,44 @@ begin
     s_axi_aresetn <= '1';
     for i in 0 to 99 loop wait until rising_edge(s_axi_aclk); end loop;
 
-    cpu_wr_reg(REG_RX_ADDR_LO, x"00000000");
-    cpu_wr_reg(REG_RX_ADDR_HI, x"00000000");
-    cpu_wr_reg(REG_RX_BYTES,   std_logic_vector(to_unsigned(NFRAMES*4, 32)));
-    cpu_wr_reg(REG_RX_START,   x"00000001");
-    loop cpu_rd_reg(REG_RX_STAT); exit when test_reg(31) = '1'; end loop;
-    for i in 0 to 99 loop wait until rising_edge(s_axi_aclk); end loop;  -- let last beats land
+    -- Sweep the runtime RX sample delay (REG_CFG[2:0]) and capture once per
+    -- value, exactly as a user would on hardware to find their board's value.
+    for dly in 0 to 3 loop
+      cpu_wr_reg(REG_CFG, std_logic_vector(to_unsigned(dly, 32)));
+      mon_clr <= '1'; wait until rising_edge(s_axi_aclk); mon_clr <= '0';
+      cpu_wr_reg(REG_RX_ADDR_LO, x"00000000");
+      cpu_wr_reg(REG_RX_ADDR_HI, x"00000000");
+      cpu_wr_reg(REG_RX_BYTES,   std_logic_vector(to_unsigned(NFRAMES*4, 32)));
+      cpu_wr_reg(REG_RX_START,   x"00000001");
+      -- wait done: drop then rise (sticky)
+      loop cpu_rd_reg(REG_RX_STAT); exit when test_reg(31) = '0'; end loop;
+      loop cpu_rd_reg(REG_RX_STAT); exit when test_reg(31) = '1'; end loop;
+      for i in 0 to 99 loop wait until rising_edge(s_axi_aclk); end loop;
 
-    -- decode low 16 bits (LEFT channel) and find the biggest step.
-    -- Skip beat 0 (capture armed mid-frame).
-    maxd := 0;
-    prev := to_integer(signed(wr_q(1)(15 downto 0)));
-    for i in 2 to NFRAMES-1 loop
-      cur := to_integer(signed(wr_q(i)(15 downto 0)));
-      d := cur - prev; if d < 0 then d := -d; end if;
-      if d > maxd then maxd := d; end if;
-      prev := cur;
+      -- biggest step on the LEFT (low 16) channel; skip beat 0 (start-up frame)
+      maxd := 0;
+      prev := to_integer(signed(wr_q(1)(15 downto 0)));
+      for i in 2 to NFRAMES-1 loop
+        cur := to_integer(signed(wr_q(i)(15 downto 0)));
+        d := cur - prev; if d < 0 then d := -d; end if;
+        if d > maxd then maxd := d; end if;
+        prev := cur;
+      end loop;
+      report "rx_dly=" & integer'image(dly)
+        & "  sample[1..4]=" & integer'image(to_integer(signed(wr_q(1)(15 downto 0))))
+        & "," & integer'image(to_integer(signed(wr_q(2)(15 downto 0))))
+        & "," & integer'image(to_integer(signed(wr_q(3)(15 downto 0))))
+        & "," & integer'image(to_integer(signed(wr_q(4)(15 downto 0))))
+        & "  max|delta|=" & integer'image(maxd);
+      if maxd < best_max then best_max := maxd; best_dly := dly; end if;
     end loop;
-    report "captured " & integer'image(wr_cnt) & " beats; sample[1..5] = "
-      & integer'image(to_integer(signed(wr_q(1)(15 downto 0)))) & " "
-      & integer'image(to_integer(signed(wr_q(2)(15 downto 0)))) & " "
-      & integer'image(to_integer(signed(wr_q(3)(15 downto 0)))) & " "
-      & integer'image(to_integer(signed(wr_q(4)(15 downto 0)))) & " "
-      & integer'image(to_integer(signed(wr_q(5)(15 downto 0))));
-    report "LEFT-channel max |delta| between consecutive samples = " & integer'image(maxd);
-    if maxd < 8000 then
-      report "RESULT: PASS -- capture is a clean sine (sign bit preserved)";
+
+    report "Best rx_dly (sim, sine model) = " & integer'image(best_dly)
+      & " with max|delta|=" & integer'image(best_max);
+    if best_max < 8000 then
+      report "RESULT: PASS -- a tunable rx_dly yields a clean sine";
     else
-      report "RESULT: FAIL -- sign folds at zero crossings (clipping/static)" severity error;
+      report "RESULT: FAIL -- no rx_dly cleaned up the capture" severity error;
     end if;
     finish;
   end process;

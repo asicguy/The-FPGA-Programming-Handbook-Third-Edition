@@ -19,6 +19,7 @@ module tb_capcheck;
   localparam REG_RX_BYTES   = 12'h108;
   localparam REG_RX_START   = 12'h10c;
   localparam REG_RX_STAT    = 12'h114;
+  localparam REG_CFG        = 12'h20c;      // [2:0] = rx sample delay
 
   localparam int NFRAMES = 240;             // frames (32-bit beats) to capture
 
@@ -59,36 +60,38 @@ module tb_capcheck;
     repeat (100) @(posedge s_axi_aclk); s_axi_aresetn = '1;
     repeat (100) @(posedge s_axi_aclk);
 
-    cpu_wr_reg(REG_RX_ADDR_LO, 32'h0);
-    cpu_wr_reg(REG_RX_ADDR_HI, 32'h0);
-    cpu_wr_reg(REG_RX_BYTES,   32'(NFRAMES*4));
-    cpu_wr_reg(REG_RX_START,   32'h1);
-
-    // wait for capture done (bit 31)
-    do cpu_rd_reg(REG_RX_STAT); while (~test_reg[31]);
-    $display("Capture complete. Decoding captured beats (word[31:16]=ch packed by HW):");
-    $display(" idx |   raw32   |  hi(s16) |  lo(s16)");
-    for (int i = 0; i < NFRAMES; i++) begin
-      automatic logic [31:0] w  = axi_ram.mem[i];
-      automatic shortint     hi = w[31:16];   // HW packs {rx_din[63:48], rx_din[31:16]}
-      automatic shortint     lo = w[15:0];
-      if (i < 80)
-        $display(" %3d | %08h | %7d | %7d", i, w, hi, lo);
-    end
-
-    // crude sanity: report max absolute sample-to-sample delta on the lo channel
+    // Sweep the runtime RX sample delay (REG_CFG[2:0]) -- exactly how a user
+    // finds their board's value on hardware. rx_dly=0 is the original "sample at
+    // SCLK-high" timing; with the sine model it folds the sign (static), and a
+    // non-zero delay realigns the capture to a clean sine.
     begin
-      automatic int maxd = 0;
-      automatic shortint prev = axi_ram.mem[0][15:0];
-      for (int i = 1; i < NFRAMES; i++) begin
-        automatic shortint cur = axi_ram.mem[i][15:0];
-        automatic int d = cur - prev; if (d < 0) d = -d;
-        if (d > maxd) maxd = d;
-        prev = cur;
+      automatic int best_dly = -1, best_max = 32768;
+      for (int dly = 0; dly < 4; dly++) begin
+        cpu_wr_reg(REG_CFG, 32'(dly));
+        cpu_wr_reg(REG_RX_ADDR_LO, 32'h0);
+        cpu_wr_reg(REG_RX_ADDR_HI, 32'h0);
+        cpu_wr_reg(REG_RX_BYTES,   32'(NFRAMES*4));
+        cpu_wr_reg(REG_RX_START,   32'h1);
+        do cpu_rd_reg(REG_RX_STAT); while ( test_reg[31]);   // stale done clears
+        do cpu_rd_reg(REG_RX_STAT); while (~test_reg[31]);   // this capture done
+        begin
+          automatic int maxd = 0;
+          automatic shortint prev = axi_ram.mem[1][15:0];    // skip beat 0 (start-up)
+          for (int i = 2; i < NFRAMES; i++) begin
+            automatic shortint cur = axi_ram.mem[i][15:0];
+            automatic int d = cur - prev; if (d < 0) d = -d;
+            if (d > maxd) maxd = d;
+            prev = cur;
+          end
+          $display("rx_dly=%0d  sample[1..4]=%0d,%0d,%0d,%0d  max|delta|=%0d",
+                   dly, $signed(axi_ram.mem[1][15:0]), $signed(axi_ram.mem[2][15:0]),
+                   $signed(axi_ram.mem[3][15:0]), $signed(axi_ram.mem[4][15:0]), maxd);
+          if (maxd < best_max) begin best_max = maxd; best_dly = dly; end
+        end
       end
-      $display("lo-channel max |delta| between consecutive samples = %0d", maxd);
-      $display("(a clean ~1 kHz sine @48 kHz should step by only a few thousand; ");
-      $display(" a value near 32768 means sign flips -> bit-misaligned static)");
+      $display("Best rx_dly (sim, sine model) = %0d  max|delta|=%0d", best_dly, best_max);
+      if (best_max < 8000) $display("RESULT: PASS -- a tunable rx_dly yields a clean sine");
+      else                 $display("RESULT: FAIL -- no rx_dly cleaned up the capture");
     end
     $finish;
   end

@@ -220,8 +220,8 @@ begin
       AIC_mclk_o    => AIC_mclk_o,
       AIC_lrclk_o   => AIC_lrclk_o,
       AIC_sclk_o    => AIC_sclk_o,
-      i2s_sdata_i   => i2s_sdata_i,
-      i2s_sdata_o   => i2s_sdata_o
+      AIC_sdata_i   => i2s_sdata_i,
+      AIC_sdata_o   => i2s_sdata_o
     );
 
   -- ----------------------------------------------------------------------

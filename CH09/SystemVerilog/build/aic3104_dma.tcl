@@ -167,7 +167,7 @@ wait_on_run -timeout 150 impl_1
 
 #set out_file_name "$orig_proj_name"
 
-sh cp ./aic3104_dma/aic3104_dma.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
-sh cp ./aic3104_dma/aic3104_dma.runs/impl_1/hw_wrapper.bit .
+exec cp ./aic3104_dma/aic3104_dma.gen/sources_1/bd/hw/hw_handoff/hw.hwh hw_wrapper.hwh
+exec cp ./aic3104_dma/aic3104_dma.runs/impl_1/hw_wrapper.bit .
 
 }
