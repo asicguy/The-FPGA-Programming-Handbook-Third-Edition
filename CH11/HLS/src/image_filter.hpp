@@ -7,6 +7,28 @@
 // 1920 * 2 bytes-per-row-buffer -> ~2 BRAM18 on ZU3EG. Raise only if you need it.
 #define MAX_WIDTH 1920
 
+// ---------------------------------------------------------------------------
+// Co-simulation geometry.
+//
+// The `depth` on an m_axi port is a *verification* hint, not a hardware one --
+// it has no effect on the generated RTL. What it does control is how many
+// elements the cosim wrapper copies out of each pointer argument in ENTER_WRAPC
+// before the RTL ever runs. Set it larger than the testbench actually allocates
+// and the wrapper reads off the end of that buffer:
+//
+//     ERROR: System received a signal named SIGSEGV ...
+//     Current execution stopped during CodeState = ENTER_WRAPC.
+//
+// So depth must match the testbench frame exactly. TB_W/TB_H live here rather
+// than in the testbench so the two cannot drift apart; tb_image_filter.cpp
+// static_asserts that they still agree.
+//
+// Keep TB_W/TB_H small -- cosim is RTL-accurate and a full-HD frame would take
+// hours.
+#define TB_W 64
+#define TB_H 48
+#define COSIM_DEPTH 3072        // == TB_W * TB_H
+
 // Filter modes (written to the s_axilite 'mode' register)
 #define MODE_GRAY   0   // RGB -> luma, passthrough
 #define MODE_SOBEL  1   // RGB -> luma -> Sobel magnitude, zero border

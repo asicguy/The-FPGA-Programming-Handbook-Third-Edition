@@ -203,6 +203,58 @@ Treat the 1% as indicative rather than settled: it is consistent in direction
 across every run, but the run-to-run spread on a single configuration is of the
 same order.
 
+## PS versus PL
+
+`HLS/ps_vs_pl.py` runs the same three algorithms on the A53s and on the
+accelerator over identical data. The NumPy version is checked bit-exact against
+the PL before it is timed, so that row is a like-for-like comparison; OpenCV is
+labelled approximate because `cvtColor` and `Sobel` use different coefficients,
+rounding and border handling.
+
+**Sobel, 1920×1080**, on 4× Cortex-A53 @ 1.2 GHz:
+
+| Implementation | Time | Throughput | vs PL |
+|---|---|---|---|
+| PL (HLS, SV, VHDL alike) | **11.39 ms** | 182 Mpixel/s | 1.0× |
+| OpenCV, NEON, 4 threads | 72.18 ms | 28.7 Mpixel/s | 6.3× slower |
+| NumPy (bit-exact) | 363.37 ms | 5.7 Mpixel/s | 31.9× slower |
+| Pure Python | ~29.6 s (extrapolated) | 0.07 Mpixel/s | ~2600× slower |
+
+Cache maintenance costs almost nothing: 11.39 ms compute-only becomes 11.53 ms
+including `flush()` and `invalidate()`, about 1%.
+
+### The result that complicates the story
+
+Grayscale is a different picture entirely:
+
+| Grayscale | 640×480 | 1920×1080 |
+|---|---|---|
+| PL | 1.90 ms | 11.40 ms |
+| OpenCV | **0.79 ms** | 12.39 ms |
+
+**At 640×480 the A53s beat the accelerator by 2.4×**, and at 1080p it is a tie.
+Grayscale is three multiplies and a shift per pixel — almost no arithmetic per
+byte moved — so it is purely memory-bound, and NEON working out of cache beats a
+PL accelerator that must round-trip every pixel through DDR over the HP ports.
+At 640×480 the working set is cache-friendly; by 1080p it spills and the
+advantage disappears.
+
+The PL's margin therefore tracks arithmetic intensity, not image size:
+
+| Kernel | Work per pixel | PL advantage over best PS code |
+|---|---|---|
+| grayscale | ~4 ops | none (0.4–1.1×) |
+| Sobel | ~20 ops | 6.3× |
+
+A corroborating detail: OpenCV Sobel takes 72.14 ms on one thread and 72.18 ms
+on four. Extra cores buy nothing because it is bandwidth-bound — the same reason
+the accelerator sits at ~92% of its theoretical II=1 rate rather than 100%.
+
+The honest summary is that offloading this filter is worth it for Sobel and not
+worth it for grayscale, and that the ~2600× figure against pure Python, while
+true, compares against something nobody should ship. The fair comparison is
+against OpenCV, and there the answer is 6.3×.
+
 ## Run it on the board
 
 ```bash

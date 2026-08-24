@@ -8,8 +8,11 @@
 #include <cmath>
 #include <vector>
 
-#define TB_W 64
-#define TB_H 48
+// TB_W / TB_H / COSIM_DEPTH come from image_filter.hpp, which is also where the
+// m_axi depth pragmas read them from. If these ever disagree, cosim segfaults
+// in ENTER_WRAPC rather than failing cleanly, so catch it at compile time.
+static_assert(TB_W * TB_H == COSIM_DEPTH,
+              "COSIM_DEPTH must equal TB_W*TB_H -- see image_filter.hpp");
 
 static unsigned char luma(unsigned char r, unsigned char g, unsigned char b)
 {

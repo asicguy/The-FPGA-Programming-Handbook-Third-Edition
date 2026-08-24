@@ -146,9 +146,9 @@ void image_filter(const ap_uint<32> *src,
                   int                mode)
 {
 #pragma HLS INTERFACE m_axi port=src offset=slave bundle=gmem0 \
-    max_read_burst_length=256 num_read_outstanding=16 depth=2073600
+    max_read_burst_length=256 num_read_outstanding=16 depth=COSIM_DEPTH
 #pragma HLS INTERFACE m_axi port=dst offset=slave bundle=gmem1 \
-    max_write_burst_length=256 num_write_outstanding=16 depth=2073600
+    max_write_burst_length=256 num_write_outstanding=16 depth=COSIM_DEPTH
 
 #pragma HLS INTERFACE s_axilite port=src    bundle=control
 #pragma HLS INTERFACE s_axilite port=dst    bundle=control

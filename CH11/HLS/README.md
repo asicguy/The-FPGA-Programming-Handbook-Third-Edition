@@ -17,7 +17,7 @@ CH11/HLS/
 ├── build_bd.tcl                block design → bitstream → .bit/.hwh
 ├── hil_test.py                 on-board self-check vs the golden model
 ├── dp_display.py               output to a DisplayPort monitor (no GPU involved)
-└── zu3_image_filter.ipynb      load JPEG, run accelerator, display
+└── zu3_image_filter.ipynb      software → HLS → RTL, benchmarked side by side
 ```
 
 Everything is driven from this directory — there are no `cd` steps between stages.
@@ -270,31 +270,155 @@ Two details that shape the code:
   the driver-enumerated list, and those entries are all `bpp=24` — so the output
   is `PIXEL_RGB`, not `PIXEL_RGBA`, and the kernel's alpha byte gets dropped on
   the way to the framebuffer.
-- **No zero-copy into the framebuffer.** The DRM buffer landed at `0x1_0138_4000`,
-  which is outside both DDR apertures mapped into the accelerator's master
-  address spaces, so the PL cannot write to it directly. The PL writes to a CMA
-  buffer from `allocate()` (low DDR) and the A53s copy across. The RGBA→RGB
-  narrowing would force a copy regardless.
+- **No zero-copy into the framebuffer.** The PL writes a CMA buffer from
+  `allocate()`, and the A53s copy from there into the DRM frame. The reason is
+  format, not addressing: the kernel emits packed 32-bit RGBA and the display
+  mode is RGB24, so every pixel has to be narrowed on the way through. A copy is
+  unavoidable while those two disagree.
+
+  Do **not** read anything into the address `newframe()` reports. Both
+  `physical_address` and `device_address` come back around `0x1_01B0_0000` —
+  above 4 GiB, in neither of this board's two DDR windows (`0x0`–`0x7FEF_FFFF`
+  and `0x8_0000_0000`–`0x9_7FFF_FFFF`, per `/proc/iomem`). That is a DRM fake
+  mmap offset for the GEM object, not a bus address. The buffer itself is
+  ordinary CMA and is perfectly reachable by the accelerator's masters; making
+  the PL render straight into it would be a matter of matching the pixel format
+  and getting the real physical address, not of the memory being out of range.
 
 Nothing here involves the Mali; see the note at the top of this README.
 
+### Letting the PL write the framebuffer directly
+
+The CPU copy is the whole reason end-to-end sits at ~40 fps when the
+accelerator alone manages ~89. It can be removed: the scanout buffer is
+ordinary DDR that the accelerator's masters already map.
+
+The framebuffer's true physical address is not exposed through DRM or sysfs,
+but the DPDMA hardware knows it. Channel 3 is the graphics layer; its current
+descriptor pointer lives at `0xFD4C_0000 + 0x50C`, and the descriptor decodes as:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `xfer_size` | 6220800 | 1920 × 1080 × 3 |
+| `line_size` | 5760 | 1920 × 3 |
+| `stride` | **5888** | 128 bytes of padding per row |
+| `SRC_ADDR` | **0x7950_0000** | the framebuffer, in DDR_LOW |
+| `next_desc` | itself | self-linked: one buffer, scanned continuously |
+
+`CH11/HLS/dscr_probe.py` on the board prints all of this.
+
+`0x7950_0000` sits in DDR_LOW, which `m_axi_gmem1` already maps, so the PL can
+reach it today — no block-design change. What has to change is the kernel:
+
+1. **Emit RG24, not RGBA.** Pack four pixels into three 32-bit words instead of
+   writing one word per pixel.
+2. **Honour the 5888-byte stride.** Skip 128 bytes at the end of each row; add a
+   stride argument rather than assuming `width * 3`.
+3. **Point `dst` at `0x7950_0000`** instead of a CMA buffer, and stop calling
+   `writeframe()` — the descriptor is self-linked, so the display re-reads that
+   buffer forever with no software involvement at all.
+
+Two caveats. The descriptor is single-buffered, so the PL would be writing the
+surface while DPDMA scans it — expect tearing. Double-buffering means allocating
+a second frame, alternating `dst` between the two and page-flipping, which keeps
+the flip ioctl but still copies zero bytes. And the address belongs to DRM: a
+mode change or another client can move it, so re-read the descriptor rather than
+hard-coding what you saw once.
+
+Done properly this should take end-to-end from ~40 fps to roughly the
+accelerator's own ~89 fps, with the CPU doing nothing per frame.
+
 ### 5. Notebook
 
-Copy to the board (PYNQ image, or PetaLinux with the PYNQ packages installed):
+`zu3_image_filter.ipynb` runs the same Sobel three times, in this order:
+
+1. **Software on the PS** — a pure-Python transcription of the algorithm, then
+   the vectorised NumPy version, then OpenCV for scale. The software comes
+   first because it is the specification: both hardware versions are checked
+   bit-for-bit against its output, and its runtime is the only honest
+   denominator for a speed-up figure.
+2. **HLS in the PL** — `image_filter.bit` from this directory.
+3. **Hand-written RTL in the PL** — `../out_sv/image_filter.bit`. Set
+   `HDL_IMPL = "vhdl"` in section 0 to run the VHDL build instead; the register
+   map is identical, so the same driver class works unchanged.
+
+Timings from every stage are accumulated in `RESULTS` and printed as a table
+plus a log-scale bar chart in section 6.
+
+Copy to the board (PYNQ image, or PetaLinux with the PYNQ packages installed).
+`deploy.sh` already lays this out — the notebook searches the local build
+directories first, then `/home/xilinx/ch11_hil/{hls,sv,vhdl}/`:
 
 ```
-image_filter.bit
-image_filter.hwh
+hls/image_filter.{bit,hwh}
+sv/image_filter.{bit,hwh}          # or vhdl/
 zu3_image_filter.ipynb
-test.jpg          # any JPEG
+test.jpg          # any JPEG, width ≤ MAX_WIDTH
 ```
 
-Open the notebook and run it top to bottom.
+#### The DisplayPort service, and what to do if you don't have it
 
-Verified end to end on a 1500×2000 (3.0 Mpixel) JPEG: PL Sobel 17.28 ms
-(173.6 Mpixel/s) against 452.30 ms for the NumPy equivalent on the A53s — 26×
-— with `max abs difference: 0` and `0 of 3000000` pixels differing. To run it
-headlessly the same way, note the `XILINX_XRT` and root caveats above:
+The notebook needs the PL to itself. `ch11-dp` — the optional DisplayPort demo
+installed by `deploy/deploy.sh` — drives this same IP on a timer and reprograms
+the fabric, so leaving it running corrupts the measurements *and* breaks its own
+display. Measured with it running, individual reps stalled for ~3.4 s against a
+true 16.5 ms.
+
+Section 0 works out which of three situations you are in and prints it. Only one
+needs action:
+
+| What section 0 prints | What it means | What to do |
+|---|---|---|
+| `ch11-dp is not installed - the PL is yours` | You never deployed the demo. **This is the normal state for a new user.** | Nothing. Carry on. |
+| `installed but inactive - that is the state you want` | You have it, and it is stopped. | Nothing. If it is also `enabled`, it returns after a reboot. |
+| `*** WARNING: ch11-dp is RUNNING ***` | It is driving the PL right now. | Stop it, re-run from the top. |
+
+```bash
+sudo systemctl stop  ch11-dp       # before benchmarking
+sudo systemctl start ch11-dp       # afterwards, to get the monitor back
+```
+
+**If you are a new user and have never run `deploy.sh`, none of this applies to
+you** — there is no service to stop, section 0 will say so, and the notebook
+runs exactly as documented. The demo is a separate thing that needs a monitor on
+the DisplayPort connector; it is not a prerequisite for anything here.
+
+One trap if you write your own check: `systemctl is-active ch11-dp` prints
+`inactive` for a unit that was *never installed*, indistinguishable from one you
+stopped yourself. The notebook tests `systemctl list-unit-files ch11-dp.service`
+first for that reason.
+
+Going the other way — you want the demo and it won't start — the usual cause is
+no monitor attached. `dp_display.py` checks the connector up front and exits with
+`no monitor: /sys/class/drm/card0-DP-1/status reads 'disconnected'`; confirm with
+`cat /sys/class/drm/card0-DP-1/status`. See `deploy/README.md` for the rest.
+
+Verified end to end on a 1500×2000 (3.0 Mpixel) JPEG, board otherwise idle.
+Every hardware row is `0 of 3000000` pixels differing against the NumPy
+reference, and the SV RTL is also bit-identical to the HLS build:
+
+| where | stage | best | Mpixel/s | vs NumPy |
+|---|---|---|---|---|
+| PS, pure Python | sobel (extrapolated from a 256×192 crop) | 33.50 s | 0.09 | 65.7× slower |
+| PS, NumPy | sobel | 510.08 ms | 5.88 | baseline |
+| PS, OpenCV (4 threads, *approximate*) | sobel | 92.86 ms | 32.31 | 5.5× |
+| PL, HLS | sobel, compute only | **16.38 ms** | 183.12 | **31.1×** |
+| PL, HLS | sobel, + cache flush/invalidate | 16.52 ms | 181.59 | 30.9× |
+| PL, HLS | sobel, + two 11 MiB memcpys | 110.34 ms | 27.19 | 4.6× |
+| PL, SV RTL | sobel, compute only | 16.57 ms | 181.04 | 30.8× |
+| PL, SV RTL | sobel, + cache flush/invalidate | 16.72 ms | 179.46 | 30.5× |
+
+Best-of-5 after a warm-up; the median matched the best to within 0.1% on every
+row, so these are stable numbers rather than lucky ones.
+
+Three things worth taking from that table. HLS and hand-written RTL land within
+1% of each other, which is inside the noise for a kernel this regular. Cache
+maintenance costs ~0.9%, because the 11 MiB buffers barely fit the 1 MiB L2 and
+the source is not re-dirtied between runs. And the two memcpys into and out of
+CMA add 93.8 ms — **5.7× the filtering itself** — so the accelerator is not
+remotely the bottleneck in a pipeline that hands it ordinary NumPy arrays.
+
+To run it headlessly, note the `XILINX_XRT` and root caveats above:
 
 ```bash
 sudo env XILINX_XRT=/usr MPLBACKEND=Agg /usr/local/share/pynq-venv/bin/python3 \
@@ -325,6 +449,35 @@ It fires the first time you touch `register_map`, long before the accelerator
 runs, which makes it look like a bitstream problem. The reserved field names are
 the four public attributes `Register.__init__` sets: **`address`, `width`,
 `debug`, `access`.** Don't use any of them as a top-level argument name.
+
+**Cosim dies with SIGSEGV in `ENTER_WRAPC`.** Not a bug in the kernel — the RTL
+never even starts. The message names the cause in its own list, third item:
+
+```
+INFO: [COSIM 212-302] Starting C TB testing ...
+ERROR: System received a signal named SIGSEGV and the program has to stop immediately!
+  ...
+  3) Excessive depth setting for array argument(s) ...
+Current execution stopped during CodeState = ENTER_WRAPC.
+```
+
+`depth` on an `m_axi` port is a *verification* hint and has no effect on the
+generated RTL — the hardware computes addresses at runtime from `img_width` and
+`img_height`. What it does control is how many elements the cosim wrapper copies
+out of each pointer argument before simulation begins. Set it to a full-HD frame
+(`depth=2073600`) while the testbench allocates a 64×48 one (3072 elements), and
+the wrapper reads 8.3 MB out of a 12 KB `std::vector` — a 675× overrun, straight
+into a segfault.
+
+So `depth` must match what the testbench actually allocates, not what the
+hardware can process. `TB_W`, `TB_H` and `COSIM_DEPTH` therefore all live in
+`image_filter.hpp`, where both the pragmas and the testbench can see them, and
+`tb_image_filter.cpp` carries a `static_assert` so they cannot silently drift
+apart again. Verified with Vitis 2025.2: `C/RTL co-simulation finished: PASS`,
+`0/3072 pixels wrong` in all three modes.
+
+This is also why csim passes while cosim fails — csim calls the function
+directly and never builds a wrapc buffer, so nothing reads out of bounds.
 
 **Register names don't match.** Cell 1 prints `filt.register_map` — that's the
 ground truth. HLS names 64-bit pointer arguments as split 32-bit pairs, usually
