@@ -1,0 +1,33 @@
+# xsim output
+*/build/
+*/build_sv/
+*/build_hls/
+xsim.dir/
+*.wdb
+
+# Vitis HLS component build output. hls_config.cfg and vitis-comp.json are the
+# only files in sobel_stream/ worth keeping; everything else is generated.
+HLS/sobel_stream/*
+!HLS/sobel_stream/hls_config.cfg
+!HLS/sobel_stream/vitis-comp.json
+
+# Vivado
+vivado_hls/
+vivado_sv/
+vivado_vhdl/
+ip_repo_sv/
+ip_repo_vhdl/
+out_hls/
+out_sv/
+out_vhdl/
+.Xil/
+*.jou
+*.log
+*.out
+*.pb
+*.str
+
+# device-tree overlay
+dts/*.dtbo
+
+__pycache__/
