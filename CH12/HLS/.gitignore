@@ -1,0 +1,11 @@
+# Vitis HLS component build output. hls_config.cfg and vitis-comp.json are the
+# only files in video_filter/ worth keeping; everything else is generated.
+video_filter/*
+!video_filter/hls_config.cfg
+!video_filter/vitis-comp.json
+
+*.jou
+*.log
+*.stdout
+*.str
+.Xil/

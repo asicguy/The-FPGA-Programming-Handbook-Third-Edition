@@ -1,0 +1,60 @@
+// CH12 project 0 -- device-tree overlay for the camera's I2C bus
+//
+// Derived from AMD's AUP-ZU3 base overlay, base/dts/base.dtsi
+// (Copyright (C) 2025 Advanced Micro Devices, Inc., BSD-3-Clause).
+//
+// This declares exactly one thing, and both of its magic numbers matter:
+//
+//   label = "RPICAM"
+//     Nothing knows which /dev/i2c-N the AXI IIC controller will come up as --
+//     the number depends on how many I2C adapters the PS registers first, and
+//     it moves. So the camera driver walks every one of them reading this
+//     label until it matches (sw/ov5647.py, find_camera_i2c_bus, and PYNQ's
+//     own Pcam5C does the same). Change the label and the camera is simply
+//     never found, with no error that says so.
+//
+//   interrupts = <0 104 4>
+//     104 + 32 = SPI 136 = pl_ps_irq1[0]. The GIC binding counts SPIs from 32,
+//     which is why the number here is not the one in the TRM. This has to
+//     agree with where build_bd.tcl wires mipi/iic2intc_irpt; if it does not,
+//     Linux's xiic driver blocks on an interrupt that arrives elsewhere and
+//     every I2C transaction times out.
+//
+//   reg = <0x0 0x80140000 ...>
+//     Must match the address build_bd.tcl assigns to mipi/axi_iic_0.
+//
+// The resulting camera_min.dtbo has to sit next to camera_min.bit on the board:
+// PYNQ loads a device-tree overlay by matching its basename against the
+// bitstream's.
+
+/dts-v1/;
+/plugin/;
+/ {
+	fragment@1 {
+		target = <&amba>;
+		overlay2: __overlay__ {
+			// The target, &amba, declares 2-cell addresses and
+			// 2-cell sizes, which is what the reg below uses.
+			// Repeating them here changes nothing at runtime but
+			// lets dtc check the reg property instead of warning
+			// that it cannot -- an overlay fragment has no view of
+			// its target's cell counts. AMD's base.dtsi omits them
+			// and warns; there is no reason to inherit that.
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+			axi_iic: i2c@80140000 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				clock-names = "s_axi_aclk";
+				clocks = <&usb_clk>;
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.1.a";
+				interrupt-names = "iic2intc_irpt";
+				interrupt-parent = <&gic>;
+				interrupts = <0 104 4>;
+				reg = <0x0 0x80140000 0x0 0x10000>;
+				label = "RPICAM";
+			};
+		};
+	};
+};

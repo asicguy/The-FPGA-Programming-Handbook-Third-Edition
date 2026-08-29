@@ -1,54 +1,56 @@
 #!/usr/bin/env bash
-# Simulate the SystemVerilog streaming Sobel filter with Vivado xsim.
+# Simulate the CH12 video filter with Vivado xsim.
 #
 #   source /opt/Xilinx/2025.2/Vivado/settings64.sh
-#   ./sim.sh          # the hand-written SystemVerilog
-#   ./sim.sh --hls    # the Verilog Vitis HLS generated, same testbench
+#   ./sim.sh            the hand-written SystemVerilog
+#   ./sim.sh --hls      the Verilog Vitis HLS generated
 #
-# --hls is what stands in for C/RTL co-simulation, which Vitis will not run on
-# this design: cosim supports ap_ctrl_none only when the whole top level is a
-# single II=1 pipeline. Running the generated RTL against this testbench checks
-# the same thing, with the same stimulus the hand-written versions see.
+# Both bind the same testbench, tb/tb_video_filter.sv, through a per-DUT
+# wrapper -- see tb/dut_rtl.sv for why a wrapper is needed at all.
+#
+# --hls stands in for C/RTL co-simulation. Cosim is worth running too
+# (../HLS/build_hls.sh --cosim), but it proves a different thing: it checks HLS
+# against its own C testbench, whereas this checks the generated RTL against
+# the same stimulus and the same golden model the other two implementations
+# face.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-DUT=sv
+USE_HLS=0
 for arg in "$@"; do
     case "$arg" in
-        --hls) DUT=hls ;;
-        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        --hls) USE_HLS=1 ;;
+        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 1 ;;
     esac
 done
 
-if ! command -v xvlog >/dev/null 2>&1; then
-    echo "xvlog not on PATH -- source your Vivado settings first, e.g." >&2
-    echo "    source /opt/Xilinx/2025.2/Vivado/settings64.sh" >&2
-    exit 1
-fi
+# resolved before the cd into build/, so it is not relative to the wrong place
+HLS_RTL="$PWD/../HLS/video_filter/hls/syn/verilog"
 
-mkdir -p "build_$DUT" && cd "build_$DUT"
+mkdir -p build && cd build
 
-if [ "$DUT" = hls ]; then
-    HLS_RTL=../../HLS/sobel_stream/hls/syn/verilog
+if [ "$USE_HLS" = 1 ]; then
     if [ ! -d "$HLS_RTL" ]; then
-        echo "HLS output not found at CH12/HLS/sobel_stream/hls/syn/verilog" >&2
-        echo "run CH12/HLS/build_hls.sh first" >&2
+        echo "HLS RTL not found at $HLS_RTL" >&2
+        echo "run ../HLS/build_hls.sh first" >&2
         exit 1
     fi
     xvlog -nolog "$HLS_RTL"/*.v
+    xvlog -sv -nolog ../tb/dut_hls.sv ../tb/tb_video_filter.sv
 else
     xvlog -sv -nolog \
-        ../hdl/axis_skid.sv \
-        ../hdl/sobel_stream_ctrl.sv \
-        ../hdl/sobel_stream_core.sv \
-        ../hdl/sobel_stream.sv
+        ../hdl/sync_fifo.sv \
+        ../hdl/video_filter_ctrl.sv \
+        ../hdl/video_filter_rd.sv \
+        ../hdl/video_filter_wr.sv \
+        ../hdl/video_filter_core.sv \
+        ../hdl/video_filter.sv \
+        ../tb/dut_rtl.sv \
+        ../tb/tb_video_filter.sv
 fi
 
-xvlog -sv -nolog ../tb/tb_sobel_stream.sv
-
-# -debug typical keeps internal signals visible. An optimised-away signal takes
-# the xsim kernel down rather than erroring cleanly, and the HLS RTL in
-# particular is full of them.
-xelab -nolog -debug typical tb_sobel_stream -s tb_sim
+# -debug typical keeps internal signals visible; an optimised-away signal takes
+# the xsim kernel down rather than erroring cleanly.
+xelab -nolog -debug typical tb_video_filter -s tb_sim
 xsim tb_sim -nolog -runall

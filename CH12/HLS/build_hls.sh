@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the sobel_stream HLS component with the unified Vitis flow.
+# Build the video_filter HLS component with the unified Vitis flow.
 #
 # Vitis 2024.2 and later do not ship a `vitis_hls` executable -- the standalone
 # HLS tool was folded into Vitis. The equivalents are:
@@ -10,7 +10,8 @@
 #     vitis_hls  cosim_design   ->  vitis-run --mode hls --cosim
 #     vitis_hls  export_design  ->  vitis-run --mode hls --package
 #
-# All four read the same sobel_stream/hls_config.cfg.
+# All four read the same video_filter/hls_config.cfg, which replaces the old
+# open_project / open_solution / set_part Tcl script.
 #
 # Usage:
 #     ./build_hls.sh              csim, synth and package (no cosim)
@@ -18,14 +19,14 @@
 #     ./build_hls.sh --no-csim    skip C simulation
 #
 # Output IP repository (feed this to Vivado):
-#     sobel_stream/hls/impl/ip
+#     video_filter/hls/impl/ip
 
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
 
-CFG=sobel_stream/hls_config.cfg
-WORK=sobel_stream
+CFG=video_filter/hls_config.cfg
+WORK=video_filter
 
 RUN_CSIM=1
 RUN_COSIM=0
@@ -63,6 +64,6 @@ vitis-run --mode hls --package --config "$CFG" --work_dir "$WORK"
 echo
 echo "=========================================="
 echo " IP repository for Vivado:"
-echo "   $(pwd)/sobel_stream/hls/impl/ip"
-echo " Next:  vivado -mode batch -source build_bd.tcl"
+echo "   $(pwd)/video_filter/hls/impl/ip"
+echo " Next:  cd ../project2_video_sobel && vivado -mode batch -source build_bd.tcl -tclargs hls"
 echo "=========================================="
