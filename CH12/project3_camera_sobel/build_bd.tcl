@@ -51,13 +51,30 @@ if {[lsearch -exact {sv vhdl hls} $variant] < 0} {
 set want_ila 0
 if {[llength $argv] > 1 && [lindex $argv 1] eq "ila"} { set want_ila 1 }
 
+# -tclargs <variant> oneclk runs the accelerator on pl_clk0, the SAME NET as
+# the AXI4-Lite control path, so there is no clock crossing anywhere on that
+# path -- not a converter, not an interconnect port, nothing.
+#
+# This is a diagnostic for the AP_DONE fault. An explicit axi_clock_converter
+# with ACLK_ASYNC=1 and both frequencies correctly propagated did NOT change
+# the fault rate, so a correct crossing is not the fix; this removes the
+# crossing altogether to decide whether clocks are involved at all. It costs
+# throughput: the accelerator drops from 187.5 MHz to 100, so a frame goes
+# from ~5.15 ms to ~9.6 ms.
+set one_clock 0
+if {[llength $argv] > 1 && [lindex $argv 1] eq "oneclk"} { set one_clock 1 }
+set accel_clk [expr {$one_clock ? "pl_clk0" : "pl_clk2"}]
+
 set proj_name camera_sobel_$variant
-if {$want_ila} { set proj_name camera_sobel_${variant}_ila }
+if {$want_ila}   { set proj_name camera_sobel_${variant}_ila }
+if {$one_clock}  { set proj_name camera_sobel_${variant}_oneclk }
 set proj_dir  $script_dir/vivado_$variant
-if {$want_ila} { set proj_dir $script_dir/vivado_${variant}_ila }
+if {$want_ila}  { set proj_dir $script_dir/vivado_${variant}_ila }
+if {$one_clock} { set proj_dir $script_dir/vivado_${variant}_oneclk }
 set bd_name   design_1
 set out_dir   $script_dir/out_$variant
-if {$want_ila} { set out_dir $script_dir/out_${variant}_ila }
+if {$want_ila}  { set out_dir $script_dir/out_${variant}_ila }
+if {$one_clock} { set out_dir $script_dir/out_${variant}_oneclk }
 set ip_repo   $script_dir/ip_repo_$variant
 # A separate repo: ch12_filter_vlnv and ch12_pixel_pack_vlnv each wipe the
 # directory they are handed before packaging into it.
@@ -152,7 +169,7 @@ connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk1] \
 # they land on -- runs at 200 MHz, so nothing on it has to cross a clock
 # domain. Only the AXI4-Lite control path crosses, from 100 MHz, and the
 # interconnect below does that conversion.
-connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] \
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/$accel_clk] \
     [get_bd_pins video_filter_0/ap_clk] \
     [get_bd_pins rst_accel/slowest_sync_clk] \
     [get_bd_pins zynq_ultra_ps_e_0/saxihp1_fpd_aclk] \
@@ -204,26 +221,58 @@ connect_bd_net [get_bd_pins xlconcat_0/dout] [get_bd_pins axi_intc_0/intr]
 connect_bd_net [get_bd_pins axi_intc_0/irq]  [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq0]
 
 # --- AXI4-Lite control path -------------------------------------------------
-# Four slaves. M03 runs at 200 MHz while the rest of the interconnect runs at
-# 100, which is where the control-path clock crossing happens.
+# Every port of this interconnect runs at 100 MHz. The crossing to the
+# accelerator's 187.5 MHz is done by an explicit axi_clock_converter, NOT by
+# letting M03_ACLK differ from the rest.
+#
+# That is not a stylistic preference. With M03 clocked at 187.5 the
+# interconnect performed the crossing itself, and it lost read data: an ILA on
+# both sides of this interconnect, capturing the same event, showed the
+# accelerator presenting 0x0000000E on CTRL -- ap_done | ap_idle | ap_ready --
+# while the PS side went straight from 0x1 to 0x4 with no 0xE at all. Across
+# one 4096-read window the IP presented five completions and the PS received
+# three. The PS also received 0x00000000 ten times, a value the accelerator
+# never presents and not a legal CTRL state.
+#
+# AP_DONE is clear-on-read, so a read whose data dies in transit destroys the
+# completion: the bit is cleared at the IP and the value never arrives.
+# Software then polls forever on a frame that finished, and the frame it fails
+# to arm next is the one that appears to time out. That is the AP_DONE fault,
+# and it cost five wrong theories before an ILA on both sides of one
+# interconnect showed it.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 lite_periph
 set_property -dict [list CONFIG.NUM_MI {5} CONFIG.NUM_SI {1}] [get_bd_cells lite_periph]
 connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] [get_bd_intf_pins lite_periph/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M00_AXI] [get_bd_intf_pins mipi/S_AXI_LITE]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M01_AXI] [get_bd_intf_pins mipi/csirxss_s_axi]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M02_AXI] [get_bd_intf_pins mipi/S_AXI]
-connect_bd_intf_net [get_bd_intf_pins lite_periph/M03_AXI] [get_bd_intf_pins video_filter_0/s_axi_control]
+# M03 -> clock converter -> the accelerator. With one_clock there is nothing
+# to convert, so the converter is left out entirely rather than degenerated.
+if {$one_clock} {
+    connect_bd_intf_net [get_bd_intf_pins lite_periph/M03_AXI] \
+        [get_bd_intf_pins video_filter_0/s_axi_control]
+} else {
+    create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter ctrl_cdc
+    connect_bd_intf_net [get_bd_intf_pins lite_periph/M03_AXI] [get_bd_intf_pins ctrl_cdc/S_AXI]
+    connect_bd_intf_net [get_bd_intf_pins ctrl_cdc/M_AXI] [get_bd_intf_pins video_filter_0/s_axi_control]
+}
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M04_AXI] [get_bd_intf_pins axi_intc_0/s_axi]
 connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins axi_intc_0/s_axi_aclk]
 connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn] [get_bd_pins axi_intc_0/s_axi_aresetn]
-foreach p {ACLK S00_ACLK M00_ACLK M01_ACLK M02_ACLK M04_ACLK} {
+foreach p {ACLK S00_ACLK M00_ACLK M01_ACLK M02_ACLK M03_ACLK M04_ACLK} {
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins lite_periph/$p]
 }
-connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] [get_bd_pins lite_periph/M03_ACLK]
-foreach p {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN M02_ARESETN M04_ARESETN} {
+foreach p {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN M02_ARESETN M03_ARESETN M04_ARESETN} {
     connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn] [get_bd_pins lite_periph/$p]
 }
-connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins lite_periph/M03_ARESETN]
+
+# The converter straddles the two domains: 100 MHz in, 187.5 MHz out.
+if {!$one_clock} {
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]    [get_bd_pins ctrl_cdc/s_axi_aclk]
+    connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn]  [get_bd_pins ctrl_cdc/s_axi_aresetn]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]    [get_bd_pins ctrl_cdc/m_axi_aclk]
+    connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins ctrl_cdc/m_axi_aresetn]
+}
 
 # --- DDR paths ---------------------------------------------------------------
 connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_FPD] [get_bd_intf_pins mipi/S00_AXI]
@@ -237,7 +286,7 @@ foreach {sc port slave} {sc_gmem0 m_axi_gmem0 S_AXI_HP1_FPD sc_gmem1 m_axi_gmem1
     set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1} CONFIG.NUM_CLKS {1}] [get_bd_cells $sc]
     connect_bd_intf_net [get_bd_intf_pins video_filter_0/$port] [get_bd_intf_pins $sc/S00_AXI]
     connect_bd_intf_net [get_bd_intf_pins $sc/M00_AXI] [get_bd_intf_pins zynq_ultra_ps_e_0/$slave]
-    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] [get_bd_pins $sc/aclk]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/$accel_clk] [get_bd_pins $sc/aclk]
     connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins $sc/aresetn]
 }
 
@@ -258,68 +307,63 @@ set_property offset 0xA0040000 [get_bd_addr_segs {zynq_ultra_ps_e_0/Data/SEG_v_p
 
 # --- the ILA --------------------------------------------------------------
 if {$want_ila} {
-    # Find the nets from the PINS, not by name: Vivado auto-names interface
-    # nets after whichever end it feels like, and a name that drifts would
-    # instrument nothing while still building.
-    set debug_intf {s_axi_control m_axi_gmem1}
+    # Two probes, on OPPOSITE SIDES of the same interconnect:
+    #
+    #   the IP side   (video_filter_0/s_axi_control, 187.5 MHz)
+    #   the PS side   (lite_periph/S00_AXI, 100 MHz)
+    #
+    # The IP side already showed the accelerator returning 0x0000000E -- the
+    # completion -- exactly once, followed by software never re-arming. The
+    # question that leaves is whether that value reaches the PS. Comparing the
+    # two ports across the same fault answers it; a single side cannot.
+    #
+    # Both are armed while the system is idle and triggered on their own first
+    # CTRL read of 0x4, so both capture the SAME fault onset. Triggering the PS
+    # side on 0xE would be useless -- it reads 0xE on every healthy frame.
+    set debug_specs {
+        {video_filter_0/s_axi_control zynq_ultra_ps_e_0/pl_clk2}
+        {lite_periph/S00_AXI          zynq_ultra_ps_e_0/pl_clk0}
+    }
     set marked {}
-    foreach n $debug_intf {
-        set net [get_bd_intf_nets -quiet \
-                     -of_objects [get_bd_intf_pins video_filter_0/$n]]
-        if {$net eq ""} {
-            error "ILA: nothing connected to video_filter_0/$n"
-        }
+    set autodict {}
+    foreach spec $debug_specs {
+        lassign $spec pinpath clkpath
+        set net [get_bd_intf_nets -quiet -of_objects [get_bd_intf_pins $pinpath]]
+        if {$net eq ""} { error "ILA: nothing connected to $pinpath" }
         set_property HDL_ATTRIBUTE.DEBUG true $net
         lappend marked $net
-        puts " ILA probe: video_filter_0/$n -> $net"
-    }
-    # Whatever clocks the accelerator is what the ILA must sample on.
-    set ila_clk [get_bd_pins -quiet \
-        -of_objects [get_bd_nets -of_objects [get_bd_pins video_filter_0/ap_clk]] \
-        -filter {DIR == O}]
-    if {$ila_clk eq ""} { error "ILA: cannot find the clock driving video_filter_0/ap_clk" }
-    puts " ILA clock: $ila_clk"
-
-    set autodict {}
-    foreach net $marked {
-        lappend autodict $net {AXI_R_ADDRESS "Data and Trigger" \
-                               AXI_R_DATA "Data and Trigger" \
-                               AXI_W_ADDRESS "Data and Trigger" \
-                               AXI_W_DATA "Data and Trigger" \
-                               AXI_W_RESPONSE "Data and Trigger" \
-                               CLK_SRC $ila_clk \
-                               SYSTEM_ILA "Auto" APC_EN "0"}
+        # Each side is sampled on ITS OWN clock: the interconnect crosses
+        # 100 MHz to 187.5, and probing one side on the other's clock would
+        # produce a capture that looks fine and means nothing.
+        lappend autodict $net [list AXI_R_ADDRESS "Data and Trigger" \
+                                    AXI_R_DATA "Data and Trigger" \
+                                    AXI_W_ADDRESS "Data and Trigger" \
+                                    AXI_W_DATA "Data and Trigger" \
+                                    AXI_W_RESPONSE "Data and Trigger" \
+                                    CLK_SRC "/$clkpath" \
+                                    SYSTEM_ILA "Auto" APC_EN "0"]
+        puts " ILA probe: $pinpath on $clkpath -> $net"
     }
     apply_bd_automation -rule xilinx.com:bd_rule:debug -dict $autodict
 
     # The automation inserts the System ILAs but does not honour CLK_SRC here,
-    # leaving /system_ila_*/clk floating. That surfaces at validation as
-    # "clock pins are not connected to a valid clock source" naming a cell this
-    # script never created, which reads like a fault in the design rather than
-    # in automation that half-finished. Connect them explicitly.
-    foreach ila [get_bd_cells -quiet -filter {NAME =~ "system_ila*"}] {
+    # leaving /system_ila_*/clk floating. Connect each to the clock of the
+    # interface it is watching.
+    set idx 0
+    foreach ila [lsort [get_bd_cells -quiet -filter {NAME =~ "system_ila*"}]] {
+        lassign [lindex $debug_specs $idx] pinpath clkpath
         set cp [get_bd_pins -quiet $ila/clk]
         if {$cp ne "" && [get_bd_nets -quiet -of_objects $cp] eq ""} {
-            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] $cp
-            puts " ILA: connected [get_property NAME $ila]/clk"
+            connect_bd_net [get_bd_pins $clkpath] $cp
+            puts " ILA: [get_property NAME $ila]/clk -> $clkpath"
         }
         set rp [get_bd_pins -quiet $ila/resetn]
         if {$rp ne "" && [get_bd_nets -quiet -of_objects $rp] eq ""} {
             connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] $rp
-            puts " ILA: connected [get_property NAME $ila]/resetn"
         }
-    }
-    # Depth and storage qualification are BUILD-time options on a System ILA:
-    # CONTROL.CAPTURE_MODE and CONTROL.DATA_DEPTH are read-only at run time.
-    # The defaults give 1024 samples with no qualification, which at 187.5 MHz
-    # is 5.5 us and captured exactly one read transfer -- useless against a
-    # fault whose history spans milliseconds. Storing only completed read
-    # transfers turns the buffer into 1024+ reads instead of 1024 cycles.
-    foreach ila [get_bd_cells -quiet -filter {NAME =~ "system_ila*"}] {
         set_property -dict [list CONFIG.C_DATA_DEPTH {4096} \
-                                 CONFIG.C_EN_STRG_QUAL {1} \
-                                 CONFIG.C_ADV_TRIGGER {true}] $ila
-        puts " ILA: [get_property NAME $ila] depth=4096 storage-qualified"
+                                 CONFIG.C_EN_STRG_QUAL {1}] $ila
+        incr idx
     }
     puts " ILA: [llength $marked] AXI interfaces instrumented"
 }

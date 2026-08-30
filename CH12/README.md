@@ -1262,66 +1262,64 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout: the accelerator is not the problem.** Intermittently a
-frame appears not to complete, at roughly one in a thousand. It is mitigated in
-software and **not closed**. Five plausible theories were measured away before
-an ILA showed what is actually on the wire, and the sequence of refutations is
-worth more than any of the theories was.
+**The AP_DONE timeout is the control path's clock crossing.** Intermittently a
+frame appears not to complete, at roughly one in a thousand. The accelerator is
+**not** at fault, and neither is its control block. What the fault needs is the
+AXI4-Lite clock crossing between the 100 MHz control path and the 187.5 MHz
+accelerator — remove that crossing and the fault disappears entirely.
 
-Software established, each independently:
+The decisive measurement, all with the software workaround **disabled**
+(`probe_apdone.py --no-latch`, which is what that flag is for):
 
-- the frame **runs to completion** — the destination's last word is written,
-  9 timeouts out of 9;
-- `ap_done` **fires** — `IP_ISR` latches it every time;
-- `ap_idle` returns to 1 and `ap_start` clears, which only the `ap_done` branch
-  does;
-- `AP_DONE` is nevertheless never observed across ~408,000 polls, and a fresh
-  read at the deadline agrees with the polled value;
-- no reset occurred — the argument registers are intact;
-- no frame completes implausibly fast: min 5.135, median 5.143, max 5.295 ms
-  over 3,981 frames, so no completion is being consumed by the wrong frame.
+| control path | timeouts |
+|---|---|
+| crossing inside `axi_interconnect` (M03 clocked separately) | ~0.5% |
+| crossing via an explicit `axi_clock_converter`, `ACLK_ASYNC=1` | ~0.5% |
+| **no crossing — `-tclargs sv oneclk`, everything on `pl_clk0`** | **0 in 8000** |
 
-Refuted along the way, each by a measurement built to refute it: a clear-on-read
-race in the control block (`tb/tb_ctrl_race.sv`, 96 phase and latency
-combinations, `AP_DONE` seen exactly once in every one); a start dropped by the
-`ap_idle` guard (removed, and the hardware rate did not change); duplicate
-`ap_done` pulses; the poll reading stale data; and a spurious reset.
+The frame time confirms the last build took effect: 9.54 ms against 5.15 ms,
+exactly the 187.5 -> 100 MHz ratio.
 
-**What the ILA shows.** `-tclargs sv ila` puts a System ILA on the
-accelerator's AXI4-Lite control port and its write master. Triggered on the
-transition into the fault — a CTRL read returning `0x4`, armed while the
-system is idle so the first match is the onset — the control port shows this:
+**What is established.** The accelerator completes the frame — the
+destination's last word is written on every timeout, 9 out of 9 — and asserts
+`ap_done`, which `IP_ISR` latches. An ILA on the accelerator's control port
+catches it presenting `0x0000000E` (`ap_done | ap_idle | ap_ready`) exactly
+once, exactly where it should. Software never sees it, keeps polling, and the
+frame that *appears* to time out is the next one, never armed because software
+is still waiting on a completion it already lost. `AP_DONE` is clear-on-read,
+so a read whose data goes missing destroys the completion outright.
+
+**What is not.** Why a correct crossing loses data. The converter is
+structurally right (`ACLK_ASYNC=1`, both frequencies propagated correctly) and
+its paths are properly constrained and met:
 
 ```
-  READ  addr=0x00  data=0x0000000E     <- ap_done | ap_idle | ap_ready
-  ... no write beats at all ...
-  READ  addr=0x00  data=0x00000004     <- and 0x4 for every read thereafter
+clk_pl_0 -> clk_pl_2   WNS 15.23  requirement 16.00   0 failing / 53 endpoints
+clk_pl_2 -> clk_pl_0   WNS 29.39  requirement 30.00   0 failing / 42 endpoints
+                                          Max Delay Datapath Only
 ```
 
-**The IP returns the completion.** `0xE` appears on its port exactly once,
-exactly where it should. And then nothing: no `configure()` argument writes, no
-`start()` write — which is what `wait()` returning would have produced — just
-continued polling that reads `0x4` from then on, for thousands of reads.
+Structure correct, constraints present, timing met — and the fault is still
+there until the crossing goes away. That is not yet explained. One detail
+worth a look by whoever picks this up: a 16 ns max-delay on paths captured by a
+5.33 ns clock is loose, and the two clocks are not truly asynchronous — both
+come from the same PLL, 1500 MHz divided by 15 and by 8.
 
-So the accelerator signals completion correctly, the read that carries it is
-acknowledged on the IP's port, and that acknowledgement **clears the
-clear-on-read bit** — but the value does not reach software. The frame that
-times out is the one that was never armed, because software is still waiting
-for a completion it already consumed on the bus without seeing.
+**`oneclk` is a diagnostic, not the fix.** It costs half the accelerator's
+throughput, and every performance number in this chapter is against 187.5 MHz.
+The shipped mitigation remains the `IP_ISR` latch in `sw/filter_driver.py`,
+which is on by default, costs nothing, and now has a demonstrated mechanism
+behind it rather than a guess.
 
-That places the fault between the accelerator's control port and the PS, in
-`lite_periph` — the AXI4-Lite path that crosses 100 MHz to 187.5 MHz — and not
-in `video_filter_ctrl`, which is exonerated by both simulation and this capture.
-It also explains why the `IP_ISR` workaround is effective: ISR is
-toggle-on-write, so a read whose data is lost cannot destroy it.
-
-**Not closed, and one number does not fit.** The reads in the cycle-accurate
-window are about 12 us apart, while the software poll rate and the
-storage-qualified capture both say 2.44 us. Until that is accounted for, this
-is a strong narrowing and not a root cause. The next measurement is an ILA on
-`lite_periph/S00_AXI`, the PS side of the same interconnect, comparing both
-ports on the same transaction: if the IP side shows `0xE` and the PS side does
-not, the interconnect is proven to be the culprit.
+**Seven theories were measured away to get here**, each one plausible and each
+refuted by an experiment built to refute it: a clear-on-read race in the
+control block (96 phase and latency combinations in `tb/tb_ctrl_race.sv`); a
+start dropped by the `ap_idle` guard (removed, rate unchanged); duplicate
+`ap_done` pulses (no fast frames in 3,981); the poll reading stale data (a
+fresh read at the deadline agrees); a spurious reset (argument registers
+intact); a missing CDC (there wasn't one missing); and missing CDC constraints
+(they are present and met). The value of the list is that it says where the
+fault is not.
 
 **The stall is understood but not conclusively closed.** The SOF mechanism above
 is real, root-caused and fixed, with tests built from the literal hardware
