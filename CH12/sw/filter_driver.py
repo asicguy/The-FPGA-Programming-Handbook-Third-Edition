@@ -171,7 +171,11 @@ class VideoFilter:
         # Opt-in: read CTRL once immediately after AP_START. See `run`.
         self.probe_start = False
         self.last_start_ctrl = None
+        # Set by enable_done_latch(). Counts completions that CTRL lost and
+        # IP_ISR saved -- a recovery is not a non-event, it is the race
+        # happening, and the number belongs in the chapter.
         self._done_latch = False
+        self.recovered_completions = 0
 
     # ------------------------------------------------------------- arguments
     def configure(self, src_addr, dst_addr, width, height, mode):
@@ -197,6 +201,15 @@ class VideoFilter:
     # ----------------------------------------------------------- handshake
     def start(self):
         """Pulse AP_START. The kernel is `ap_ctrl_hs`, so this runs one frame."""
+        if self._done_latch:
+            # IP_ISR is toggle-on-write and therefore sticky. A bit left over
+            # from the previous frame would satisfy this frame's first poll,
+            # returning before any work had been done -- so clear it here,
+            # while the accelerator is definitely idle, rather than trusting
+            # every completion path to have consumed it.
+            stale = self._ip.read(REG_ISR) & 0x3
+            if stale:
+                self._ip.write(REG_ISR, stale)
         self._ip.write(REG_CTRL, CTRL_AP_START)
 
     def enable_done_latch(self):
@@ -224,6 +237,18 @@ class VideoFilter:
         while True:
             ctrl = self._ip.read(REG_CTRL)
             if ctrl & CTRL_AP_DONE:
+                return
+            if self._done_latch and (self._ip.read(REG_ISR) & 1):
+                # ISR says the frame finished. That alone does not mean CTRL
+                # lost anything: the completion may simply have landed in the
+                # microseconds between this iteration's CTRL read and its ISR
+                # read, in which case the next CTRL read would have seen it.
+                # Re-read CTRL to tell the two apart, or the loss rate comes
+                # out two orders of magnitude too high.
+                lost = not (self._ip.read(REG_CTRL) & CTRL_AP_DONE)
+                self._ip.write(REG_ISR, 1)          # toggle-on-write, consume
+                if lost:
+                    self.recovered_completions += 1
                 return
             if self._clock() >= deadline:
                 # Report the word the last poll returned rather than reading

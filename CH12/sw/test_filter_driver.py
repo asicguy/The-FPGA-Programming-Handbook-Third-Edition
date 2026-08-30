@@ -498,5 +498,83 @@ class DoneLatchTest(unittest.TestCase):
         self.assertEqual(d.timeouts[0]["isr"], 1)
 
 
+class LatchedCompletionTest(unittest.TestCase):
+    """Accepting the sticky copy of ap_done, so a lost CTRL bit is survivable.
+
+    Measured on hardware: in 4000 frames, 18 completions fired and latched in
+    IP_ISR while CTRL's clear-on-read AP_DONE never reached the poll. ISR
+    cannot be lost that way, so a frame whose CTRL bit vanished is still
+    recoverable -- and counted, because the underlying race is not fixed by
+    reading around it.
+    """
+
+    def test_a_latched_done_completes_the_wait(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)   # CTRL never reports done
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1
+        d.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
+        d.wait(timeout=0.01)                             # must not raise
+
+    def test_consuming_it_clears_the_status(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1
+        d.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
+        d.wait(timeout=0.01)
+        self.assertEqual(ip.regs[fd.REG_ISR], 0)
+
+    def test_it_is_counted_rather_than_hidden(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1
+        d.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
+        d.wait(timeout=0.01)
+        self.assertEqual(d.recovered_completions, 1)
+
+    def test_the_latch_is_ignored_when_it_was_never_enabled(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        ip.regs[fd.REG_ISR] = 1
+        d.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
+        with self.assertRaises(TimeoutError):
+            d.wait(timeout=0.01)
+
+    def test_arming_clears_a_stale_latch(self):
+        # IP_ISR is sticky. Left set from the previous frame it would satisfy
+        # the very first poll of the next one -- returning before the frame has
+        # run, and counting a recovery that never happened.
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1
+        d.start()
+        self.assertEqual(ip.regs[fd.REG_ISR], 0)
+
+    def test_a_stale_latch_does_not_complete_the_next_frame(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)   # never completes
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1                          # left over
+        with self.assertRaises(TimeoutError):
+            d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+                  timeout=0.01)
+
+    def test_a_completion_that_merely_landed_late_is_not_a_recovery(self):
+        # ISR set AND CTRL set means the frame finished between the CTRL read
+        # and the ISR read of the same poll -- ordinary timing, nothing lost.
+        # Counting it would inflate the loss rate by orders of magnitude.
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.enable_done_latch()
+        ip.regs[fd.REG_ISR] = 1
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL, timeout=0.01)
+        self.assertEqual(d.recovered_completions, 0)
+
+    def test_a_normal_completion_is_not_counted_as_a_recovery(self):
+        # Through run(), because RearmIP only reports done once it has seen an
+        # AP_START write -- which is what makes it a model of the hardware
+        # rather than of a register file.
+        d, _ = rearm_driver(succeed_on_attempt=1)        # CTRL reports done
+        d.enable_done_latch()
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL, timeout=0.01)
+        self.assertEqual(d.recovered_completions, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
