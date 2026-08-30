@@ -199,15 +199,36 @@ class VideoFilter:
                 raise TimeoutError(_timeout_message(timeout, state))
 
     def run(self, src_addr, dst_addr, width, height, mode,
-            timeout=DEFAULT_TIMEOUT):
-        """Filter one frame in place. Returns the accelerator's elapsed seconds."""
-        self.configure(src_addr, dst_addr, width, height, mode)
-        t0 = self._clock()
-        self.start()
-        self.wait(timeout=timeout)
-        return self._clock() - t0
+            timeout=DEFAULT_TIMEOUT, retries=0):
+        """Filter one frame in place. Returns the accelerator's elapsed seconds.
 
-    def run_frames(self, src_frame, dst_frame, mode, timeout=DEFAULT_TIMEOUT):
+        `retries` re-arms the accelerator after a timeout: the arguments are
+        written again and AP_START pulsed again. It is off by default and has
+        to be asked for, because a retry that happens quietly hides the very
+        fault it is working around -- every attempt that timed out is appended
+        to `self.timeouts` whether the retry rescued the frame or not.
+
+        The returned time is the successful attempt alone. A lost attempt is
+        not part of what a frame costs, and folding it in would poison a
+        timing table with an event that is being counted separately.
+        """
+        for attempt in range(retries + 1):
+            # Written again on every attempt. If the accelerator was left in a
+            # state where the first AP_START was dropped, its argument
+            # registers are not to be trusted either.
+            self.configure(src_addr, dst_addr, width, height, mode)
+            t0 = self._clock()
+            self.start()
+            try:
+                self.wait(timeout=timeout)
+            except TimeoutError:
+                if attempt == retries:
+                    raise
+                continue
+            return self._clock() - t0
+
+    def run_frames(self, src_frame, dst_frame, mode, timeout=DEFAULT_TIMEOUT,
+                   retries=0):
         """Filter one frame buffer into another, with no copies at all.
 
         Both arguments must be buffers the PL can reach -- a `pynq.allocate`
@@ -219,7 +240,7 @@ class VideoFilter:
         height, width = dst_frame.shape[:2]
         return self.run(frame_address(src_frame, width, height),
                         frame_address(dst_frame, width, height),
-                        width, height, mode, timeout=timeout)
+                        width, height, mode, timeout=timeout, retries=retries)
 
     # ---------------------------------------------------------- diagnostics
     def _diagnose(self, ctrl):

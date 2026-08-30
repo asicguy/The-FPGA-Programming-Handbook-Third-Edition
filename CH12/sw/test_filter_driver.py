@@ -344,5 +344,61 @@ class DecodeCtrlTest(unittest.TestCase):
         self.assertEqual(fd.decode_ctrl(fd.CTRL_AUTO_RESTART), "auto_restart")
 
 
+# ------------------------------------------------------------ re-arm and retry
+class RetryTest(unittest.TestCase):
+    """Opt-in, because a silent retry would hide the fault being investigated."""
+
+    def test_does_not_retry_by_default(self):
+        d, _ = rearm_driver(succeed_on_attempt=2)
+        with self.assertRaises(TimeoutError):
+            d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+                  timeout=0.01)
+
+    def test_a_retry_completes_a_frame_the_first_arming_lost(self):
+        d, _ = rearm_driver(succeed_on_attempt=2)
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+              timeout=0.01, retries=1)   # must not raise
+
+    def test_a_retry_arms_the_accelerator_again(self):
+        d, ip = rearm_driver(succeed_on_attempt=2)
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+              timeout=0.01, retries=1)
+        self.assertEqual(ip.attempts, 2)
+
+    def test_a_retry_rewrites_the_arguments_before_arming(self):
+        d, ip = rearm_driver(succeed_on_attempt=2)
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+              timeout=0.01, retries=1)
+        self.assertEqual(ip.regs[fd.REG_WIDTH], 1280)
+
+    def test_raises_when_every_attempt_times_out(self):
+        d, _ = rearm_driver(succeed_on_attempt=10**9)
+        with self.assertRaises(TimeoutError):
+            d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+                  timeout=0.01, retries=2)
+
+    def test_every_timeout_is_recorded_not_just_the_last(self):
+        d, _ = rearm_driver(succeed_on_attempt=3)
+        d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+              timeout=0.01, retries=2)
+        self.assertEqual(len(d.timeouts), 2)
+
+    def test_the_elapsed_time_reported_is_the_successful_attempt_only(self):
+        # A retried frame took longer than a frame takes; charging the lost
+        # attempt to the measurement would poison every timing table in the
+        # chapter.
+        d, _ = rearm_driver(succeed_on_attempt=2, step=0.25)
+        t = d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+                  timeout=1.0, retries=1)
+        self.assertAlmostEqual(t, 0.25, places=6)
+
+    def test_run_frames_passes_retries_through(self):
+        d, ip = rearm_driver(succeed_on_attempt=2)
+        src = FakeFrame((48, 64, 4), device_address=0x7000_0000)
+        dst = FakeFrame((48, 64, 4), device_address=0x8000_0000)
+        d.run_frames(src, dst, ref.MODE_SOBEL, timeout=0.01, retries=1)
+        self.assertEqual(ip.attempts, 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
