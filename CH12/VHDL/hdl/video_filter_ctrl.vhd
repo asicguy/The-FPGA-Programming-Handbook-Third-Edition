@@ -62,6 +62,10 @@ entity video_filter_ctrl is
     interrupt  : out std_logic;
 
     ap_start   : out std_logic;
+    -- Single-cycle launch strobe. The engines cannot use an edge on ap_start:
+    -- a start queued behind a running frame re-arms a bit that is already set,
+    -- which produces no edge and silently loses the frame.
+    ap_launch  : out std_logic;
     ap_done    : in  std_logic;
     src_addr   : out std_logic_vector(63 downto 0);
     dst_addr   : out std_logic_vector(63 downto 0);
@@ -86,6 +90,11 @@ architecture rtl of video_filter_ctrl is
   constant ADDR_MODE   : std_logic_vector(5 downto 0) := "111000";  -- 0x38
 
   signal ap_start_i    : std_logic := '0';
+  -- A start that arrived while a frame was running, waiting its turn. The
+  -- previous design discarded such a write, which turned any momentary
+  -- disagreement between software and hardware into a permanent hang.
+  signal start_pending : std_logic := '0';
+  signal do_launch     : std_logic;
   signal ap_idle       : std_logic := '1';
   signal ap_done_r     : std_logic := '0';
   signal ap_ready_r    : std_logic := '0';
@@ -137,6 +146,12 @@ architecture rtl of video_filter_ctrl is
 begin
 
   ap_start   <= ap_start_i;
+
+  -- The engine is free and a start is armed. One cycle, because ap_idle drops
+  -- on the next edge.
+  do_launch  <= '1' when (ap_start_i = '1' and ap_idle = '1' and ap_done = '0')
+                else '0';
+  ap_launch  <= do_launch;
   src_addr   <= src_addr_i;
   dst_addr   <= dst_addr_i;
   img_width  <= img_width_i;
@@ -226,8 +241,9 @@ begin
   process (clk) begin
     if rising_edge(clk) then
       if rst_n = '0' then
-        ap_start_i   <= '0';
-        ap_idle      <= '1';
+        ap_start_i    <= '0';
+        start_pending <= '0';
+        ap_idle       <= '1';
         ap_done_r    <= '0';
         ap_ready_r   <= '0';
         auto_restart <= '0';
@@ -250,7 +266,13 @@ begin
           ap_done_r  <= '1';
           ap_ready_r <= '1';
           ap_idle    <= '1';
-          ap_start_i <= auto_restart;
+          -- A queued start is armed here instead of being thrown away.
+          if start_pending = '1' then
+            ap_start_i <= '1';
+          else
+            ap_start_i <= auto_restart;
+          end if;
+          start_pending <= '0';
           if ier(0) = '1' then isr(0) <= '1'; end if;
           if ier(1) = '1' then isr(1) <= '1'; end if;
         elsif ctrl_read_ack = '1' then
@@ -258,7 +280,7 @@ begin
           ap_ready_r <= '0';
         end if;
 
-        if ap_start_i = '1' and ap_idle = '1' and ap_done = '0' then
+        if do_launch = '1' then
           ap_idle <= '0';
         end if;
 
@@ -266,8 +288,14 @@ begin
           case awaddr_r is
             when ADDR_CTRL =>
               if wstrb_r(0) = '1' then
-                if wdata_r(0) = '1' and ap_idle = '1' then
-                  ap_start_i <= '1';
+                if wdata_r(0) = '1' then
+                  -- Free now: arm it. Busy, or being consumed this very
+                  -- cycle: queue it. Never discard it.
+                  if ap_idle = '1' and do_launch = '0' then
+                    ap_start_i    <= '1';
+                  else
+                    start_pending <= '1';
+                  end if;
                 end if;
                 auto_restart <= wdata_r(7);
               end if;

@@ -152,7 +152,6 @@ architecture rtl of video_filter is
   constant CNT_W : integer := integer(ceil(log2(real(FIFO_DEPTH)))) + 1;
 
   signal ap_start   : std_logic;
-  signal ap_start_d : std_logic := '0';
   signal launch     : std_logic;
   signal ap_done    : std_logic;
 
@@ -201,21 +200,14 @@ begin
       rresp => s_axi_control_rresp, rvalid => s_axi_control_rvalid,
       rready => s_axi_control_rready,
       interrupt => interrupt,
-      ap_start => ap_start, ap_done => ap_done,
+      ap_start => ap_start, ap_launch => launch, ap_done => ap_done,
       src_addr => src_addr, dst_addr => dst_addr,
       img_width => img_width, img_height => img_height, mode => mode);
 
-  -- ap_start is a level; the engines want a single-cycle launch pulse
-  process (ap_clk) begin
-    if rising_edge(ap_clk) then
-      if ap_rst_n = '0' then
-        ap_start_d <= '0';
-      else
-        ap_start_d <= ap_start;
-      end if;
-    end if;
-  end process;
-  launch <= ap_start and (not ap_start_d);
+  -- The control block emits the launch strobe directly. It used to be derived
+  -- here as an edge on ap_start, which cannot express a start queued behind a
+  -- running frame: re-arming an already-set bit produces no edge.
+
 
   -- ---------------- read path ----------------
   in_free <= std_logic_vector(to_unsigned(FIFO_DEPTH, CNT_W) - unsigned(in_count));

@@ -154,6 +154,7 @@ module video_filter
   localparam CNT_W = $clog2(FIFO_DEPTH) + 1;
 
   wire        ap_start;
+  wire        launch;
   wire        ap_done;
   wire [63:0] src_addr, dst_addr;
   wire [31:0] img_width, img_height, mode;
@@ -189,6 +190,7 @@ module video_filter
      .rready     (s_axi_control_rready),
      .interrupt  (interrupt),
      .ap_start   (ap_start),
+     .ap_launch  (launch),
      .ap_done    (ap_done),
      .src_addr   (src_addr),
      .dst_addr   (dst_addr),
@@ -196,14 +198,10 @@ module video_filter
      .img_height (img_height),
      .mode       (mode));
 
-  // ap_start is a level; the engines want a single-cycle launch pulse.
-  reg  ap_start_d;
-  wire launch;
-  always @(posedge ap_clk) begin
-    if (!ap_rst_n) ap_start_d <= 1'b0;
-    else           ap_start_d <= ap_start;
-  end
-  assign launch = ap_start & ~ap_start_d;
+  // The control block emits the launch strobe directly. It used to be derived
+  // here as an edge on ap_start, which cannot express a start queued behind a
+  // running frame: re-arming an already-set bit produces no edge, and the
+  // frame is lost. See video_filter_ctrl.sv.
 
   // ------------------------------------------------------------------
   // Read path: gmem0 -> input FIFO
@@ -387,6 +385,11 @@ module video_filter
   assign m_axi_gmem1_arcache = 4'b0011;
   assign m_axi_gmem1_arprot  = 3'b000;
   assign m_axi_gmem1_arqos   = 4'b0000;
+
+  // ap_start is still the readable CTRL bit and still means "armed or
+  // running", but the engines are launched by the strobe now, so the top level
+  // has no use for it.
+  wire _unused_ctrl = &{1'b0, ap_start};
 
   wire _unused_ports = &{1'b0,
                          m_axi_gmem0_awready, m_axi_gmem0_wready,

@@ -69,6 +69,10 @@ module video_filter_ctrl
 
    // to/from the datapath
    output logic                 ap_start,
+   // Single-cycle launch strobe. The engines cannot use an edge on ap_start:
+   // a start queued behind a running frame re-arms a bit that is already set,
+   // which produces no edge and silently loses the frame. See start_pending.
+   output logic                 ap_launch,
    input wire                   ap_done,
    output logic [63:0]          src_addr,
    output logic [63:0]          dst_addr,
@@ -90,6 +94,12 @@ module video_filter_ctrl
   localparam [ADDR_WIDTH-1:0] ADDR_MODE   = 6'h38;
 
   logic                  ap_idle;
+  // A start that arrived while a frame was running, waiting its turn. The
+  // previous design discarded such a write, which turned any momentary
+  // disagreement between software and hardware into a permanent hang: nothing
+  // running, ap_idle set, and a poll that could never be satisfied. Measured
+  // on hardware at about one frame in a thousand.
+  logic                  start_pending;
   logic                  ap_done_r;
   logic                  ap_ready_r;
   logic                  auto_restart;
@@ -202,12 +212,19 @@ module video_filter_ctrl
   logic ctrl_read_ack;
   assign ctrl_read_ack = rvalid && rready && (araddr_r == ADDR_CTRL);
 
+  // The engine is free and a start is armed. One cycle, because ap_idle drops
+  // on the next edge.
+  logic do_launch;
+  assign do_launch = ap_start && ap_idle && !ap_done;
+  assign ap_launch = do_launch;
+
   // ---------------------------------------------------------------------
   // Registers
   // ---------------------------------------------------------------------
   always_ff @(posedge clk) begin
     if (!rst_n) begin
-      ap_start     <= 1'b0;
+      ap_start      <= 1'b0;
+      start_pending <= 1'b0;
       ap_idle      <= 1'b1;
       ap_done_r    <= 1'b0;
       ap_ready_r   <= 1'b0;
@@ -231,7 +248,9 @@ module video_filter_ctrl
         ap_done_r  <= 1'b1;
         ap_ready_r <= 1'b1;
         ap_idle    <= 1'b1;
-        ap_start   <= auto_restart;
+        // A queued start is armed here instead of being thrown away.
+        ap_start      <= start_pending ? 1'b1 : auto_restart;
+        start_pending <= 1'b0;
         if (ier[0]) isr[0] <= 1'b1;
         if (ier[1]) isr[1] <= 1'b1;
       end else if (ctrl_read_ack) begin
@@ -239,8 +258,7 @@ module video_filter_ctrl
         ap_ready_r <= 1'b0;
       end
 
-      // launch
-      if (ap_start && ap_idle && !ap_done) begin
+      if (do_launch) begin
         ap_idle <= 1'b0;
       end
 
@@ -248,9 +266,14 @@ module video_filter_ctrl
         case (awaddr_r)
           ADDR_CTRL: begin
             if (wstrb_r[0]) begin
-              if (wdata_r[0] && ap_idle) ap_start <= 1'b1;
+              if (wdata_r[0]) begin
+                // Free now -- arm it. Busy, or being consumed this very
+                // cycle -- queue it. Never discard it.
+                if (ap_idle && !do_launch) ap_start      <= 1'b1;
+                else                       start_pending <= 1'b1;
+              end
+              auto_restart <= wdata_r[7];
             end
-            if (wstrb_r[0]) auto_restart <= wdata_r[7];
           end
           ADDR_GIER:   if (wstrb_r[0]) gie <= wdata_r[0];
           ADDR_IER:    if (wstrb_r[0]) ier <= wdata_r[1:0];
