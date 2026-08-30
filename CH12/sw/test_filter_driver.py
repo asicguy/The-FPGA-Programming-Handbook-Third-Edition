@@ -328,14 +328,20 @@ class TimeoutDiagnosticsTest(unittest.TestCase):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
         self.assertIn("0x80000000", str(timed_out(d, ip)))
 
-    def test_does_not_poll_the_control_register_again_for_diagnostics(self):
-        # AP_DONE is clear-on-read. A diagnostic read issued after the deadline
-        # would consume a completion that arrived late and turn a slow frame
-        # into a lost one, so the reported word is the last one polled.
-        # timeout / step = exactly ten polls, and no eleventh.
+    def test_reads_the_control_register_exactly_once_more_at_the_deadline(self):
+        # This used to assert that CTRL was NEVER read again, because AP_DONE
+        # is clear-on-read and a diagnostic read could consume a late
+        # completion. That invariant was deliberately relaxed: the frame is
+        # already being declared lost at this point, and comparing the polled
+        # word against a fresh one is the only way to tell "the completion was
+        # consumed" from "the poll was not seeing the hardware" -- a
+        # distinction three refuted theories turned on.
+        #
+        # What still matters is that it happens ONCE, and only after the
+        # deadline: timeout / step = ten polls, plus the single fresh read.
         d, ip = rearm_driver(succeed_on_attempt=10**9)
         timed_out(d, ip)
-        self.assertEqual(ip.ctrl_reads, 10)
+        self.assertEqual(ip.ctrl_reads, 11)
 
     def test_records_the_timeout_on_the_driver(self):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
@@ -351,6 +357,31 @@ class TimeoutDiagnosticsTest(unittest.TestCase):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
         timed_out(d, ip)
         self.assertEqual(d.timeouts[0]["img_width"], 1280)
+
+
+class DeadlineReadTest(unittest.TestCase):
+    """What CTRL says when a fresh read is issued at the deadline.
+
+    `wait()` reports the word the last poll returned, deliberately: AP_DONE is
+    clear-on-read and a diagnostic read could consume a completion that arrived
+    late. But that means the reported value is what the poll kept seeing, not
+    the state at the deadline -- and if those ever differ, the difference is
+    the fault. One extra read once the frame is already lost costs nothing.
+    """
+
+    def test_reports_a_fresh_read_alongside_the_polled_one(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("fresh", str(timed_out(d, ip)))
+
+    def test_the_record_carries_both(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertIn("ctrl_fresh", d.timeouts[0])
+
+    def test_the_record_carries_the_poll_count(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertGreater(d.timeouts[0]["polls"], 0)
 
 
 class DecodeCtrlTest(unittest.TestCase):

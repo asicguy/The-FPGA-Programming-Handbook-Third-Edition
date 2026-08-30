@@ -1262,101 +1262,66 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout, and what it is not.** Intermittently the accelerator
-does not assert `AP_DONE` within 5 s. It reproduces in projects 2 and 3, which
-share the accelerator, at roughly one frame in a thousand. It is **mitigated in
-software and not understood**. Two mechanisms have been proposed and both were
-refuted by measurement; what follows is set out in the order it was obtained,
-because the refutations are more useful than the guesses.
+**The AP_DONE timeout: the accelerator is not the problem.** Intermittently a
+frame appears not to complete, at roughly one in a thousand. It is mitigated in
+software and **not closed**. Five plausible theories were measured away before
+an ILA showed what is actually on the wire, and the sequence of refutations is
+worth more than any of the theories was.
 
-`sw/filter_driver.py` reports the hardware state when it fires:
+Software established, each independently:
+
+- the frame **runs to completion** — the destination's last word is written,
+  9 timeouts out of 9;
+- `ap_done` **fires** — `IP_ISR` latches it every time;
+- `ap_idle` returns to 1 and `ap_start` clears, which only the `ap_done` branch
+  does;
+- `AP_DONE` is nevertheless never observed across ~408,000 polls, and a fresh
+  read at the deadline agrees with the polled value;
+- no reset occurred — the argument registers are intact;
+- no frame completes implausibly fast: min 5.135, median 5.143, max 5.295 ms
+  over 3,981 frames, so no completion is being consumed by the wrong frame.
+
+Refuted along the way, each by a measurement built to refute it: a clear-on-read
+race in the control block (`tb/tb_ctrl_race.sv`, 96 phase and latency
+combinations, `AP_DONE` seen exactly once in every one); a start dropped by the
+`ap_idle` guard (removed, and the hardware rate did not change); duplicate
+`ap_done` pulses; the poll reading stale data; and a spurious reset.
+
+**What the ILA shows.** `-tclargs sv ila` puts a System ILA on the
+accelerator's AXI4-Lite control port and its write master. Triggered on the
+transition into the fault — a CTRL read returning `0x4`, armed while the
+system is idle so the first match is the onset — the control port shows this:
 
 ```
-CTRL=0x00000004  ap_idle
-src=0x7bb00000  dst=0x7c700000  1280x720  mode=1
-ap_idle is set: the kernel is NOT running
+  READ  addr=0x00  data=0x0000000E     <- ap_done | ap_idle | ap_ready
+  ... no write beats at all ...
+  READ  addr=0x00  data=0x00000004     <- and 0x4 for every read thereafter
 ```
 
-`ap_idle` set rules out a datapath deadlock — nothing was running. `probe_start`
-reads CTRL one transaction after arming, when a launched kernel and a dropped
-write are still distinguishable, and in 18 timeouts out of 4000 frames it said
-the same thing every time:
+**The IP returns the completion.** `0xE` appears on its port exactly once,
+exactly where it should. And then nothing: no `configure()` argument writes, no
+`start()` write — which is what `wait()` returning would have produced — just
+continued polling that reads `0x4` from then on, for thousands of reads.
 
-```
-at start: CTRL=0x00000001  ap_start
-the kernel DID launch -- ap_idle was already clear
-```
+So the accelerator signals completion correctly, the read that carries it is
+acknowledged on the IP's port, and that acknowledgement **clears the
+clear-on-read bit** — but the value does not reach software. The frame that
+times out is the one that was never armed, because software is still waiting
+for a completion it already consumed on the bus without seeing.
 
-Since `ap_idle` returns to 1 only through the `ap_done` branch, the frame also
-finished. `IP_ISR` bit 0 latches the same `ap_done` and is toggle-on-write
-rather than clear-on-read, and at every timeout it was set. So the completion
-**is generated and then lost** between the hardware and the poll.
+That places the fault between the accelerator's control port and the PS, in
+`lite_periph` — the AXI4-Lite path that crosses 100 MHz to 187.5 MHz — and not
+in `video_filter_ctrl`, which is exonerated by both simulation and this capture.
+It also explains why the `IP_ISR` workaround is effective: ISR is
+toggle-on-write, so a read whose data is lost cannot destroy it.
 
-**Refuted theory 1: the clear-on-read race.** `AP_DONE` in CTRL is
-clear-on-read, so the obvious suspect is a poll that consumes the bit without
-reporting it. `tb/tb_ctrl_race.sv` sweeps the `ap_done` pulse against a polling
-master across every cycle offset and every R-channel latency the interconnect
-could impose — 96 combinations — and the master observes `AP_DONE` exactly once
-in each. The control block does not lose it.
-
-**Refuted theory 2: the dropped start.** The same testbench shows that a CTRL
-write arriving while `ap_idle` is low was silently discarded, and that the state
-it leaves behind — `ap_idle` set, `ap_start` clear, no completion coming — is
-exactly the hardware signature. That looked conclusive. The guard was removed:
-a start arriving while busy is now queued and runs next, and the control block
-emits an explicit `ap_launch` strobe because an edge on `ap_start` cannot
-express a queued start. On hardware, with the software latch disabled, the
-fault **still occurred at the same rate** — 29 timeouts in 4000 frames. So the
-guard was a real defect, and not this one.
-
-That change is kept: it removes a path where a frame could be lost with no
-error, and it matches what Vitis HLS's control block does. It is not a fix for
-this fault and is not described as one.
-
-**What carries the design is the latched copy.** `wait()` also accepts
-`IP_ISR`, consumes it, and **counts** it — a recovery is the race happening,
-not a non-event. `start()` clears a stale latch first, because `IP_ISR` is
-sticky and one left over from the previous frame would satisfy the next frame's
-first poll before any work had been done. With that in place: **4000 frames,
-0 timeouts, 5 recoveries**, and a wall time of 20.7 s, or 5.17 ms a frame —
-which agrees with the 5.15 ms project 2 measures independently, and is the
-check that the recoveries are real completions rather than early returns.
-
-**The next step is an ILA, not a third theory.** Two hypotheses, each supported
-by a measurement, have both been wrong. Instrumenting `ap_start`, `ap_launch`,
-`ap_idle`, `ap_done` and the AXI4-Lite read channel, triggered on `ap_done`,
-would show a failing frame directly instead of inferring it from the wreckage
-five seconds later. That is how CH12's camera bugs were found, and this
-deserves the same. `project3_camera_sobel/probe_apdone.py --no-latch` measures
-the rate with the workaround out of the way.
-
-It is **on by default**, and armed on the first `start()` rather than in the
-constructor — a driver that touches registers while an IP is still in reset
-wedges this board rather than raising. Nothing else uses `IP_ISR`, and
-`IP_IER` bit 0 on its own raises no interrupt because `GIER` is zero, so there
-is nothing traded away. `done_latch = False` gives the raw behaviour back.
-
-Opt-in would have been the tidier choice and it was the wrong one: the fix
-existed for a day while every notebook still failed, because no notebook asked
-for it. A mitigation nothing reaches is not a mitigation.
-
-**The RTL defect is still there.** Reading around a race is not fixing it. The
-losing cycle has not been located: the completion logic gives the set priority
-over the clear-on-read specifically so that a poll landing on the same cycle
-cannot lose it, and every trace through that path says it works. The testbench
-drives 19 back-to-back cases without a reset and does not reproduce it, which
-is itself a clue — its AXI4-Lite model answers with zero latency, and whatever
-this is needs a timing relationship that model cannot produce. Reproducing it
-in simulation is the next step, and until then no RTL change should be made on
-the strength of a theory.
-
-Two numbers were published in an earlier version of this section and withdrawn,
-for the same reason the display frame rates were once withdrawn: a recovery
-counter that fired whenever the completion landed between the CTRL read and the
-ISR read of the same poll, and a stale `IP_ISR` that let `wait()` return before
-the frame had run. Both inflated the loss rate by two orders of magnitude, and
-the second made a 4000-frame run finish in 13.6 s instead of 20.7. If an
-instrument disagrees with the wall clock, the instrument is wrong.
+**Not closed, and one number does not fit.** The reads in the cycle-accurate
+window are about 12 us apart, while the software poll rate and the
+storage-qualified capture both say 2.44 us. Until that is accounted for, this
+is a strong narrowing and not a root cause. The next measurement is an ILA on
+`lite_periph/S00_AXI`, the PS side of the same interconnect, comparing both
+ports on the same transaction: if the IP side shows `0xE` and the PS side does
+not, the interconnect is proven to be the culprit.
 
 **The stall is understood but not conclusively closed.** The SOF mechanism above
 is real, root-caused and fixed, with tests built from the literal hardware

@@ -56,6 +56,11 @@ from filter_driver import VideoFilter, decode_ctrl          # noqa: E402
 BIT = os.path.join(HERE, "out_sv", "camera_sobel.bit")
 W, H = 1280, 720
 SLOW_MS = 20.0          # a frame is nominally ~5 ms
+# A frame cannot physically finish much under 5 ms: 921600 pixels at one per
+# beat at 187.5 MHz is 4.9 ms. Anything materially faster did not run -- it
+# returned on a completion belonging to some other frame, which is the
+# signature of ap_done firing more than once per start.
+FAST_MS = 3.0
 
 
 def main():
@@ -78,19 +83,52 @@ def main():
     src[:] = 0x40
     src.flush()
 
+    # Poison the two ends of the destination before every frame. The
+    # accelerator writes it in address order, so the LAST word tells us whether
+    # the frame ran to completion -- which is the difference between "the
+    # completion was signalled and lost" and "the frame never finished". Only
+    # 16 words are touched, so this does not perturb the timing.
+    POISON = 0xEE
+    def poison():
+        dst[0, 0, :] = POISON
+        dst[H - 1, W - 1, :] = POISON
+        dst.flush()
+
+    def poison_state():
+        dst.invalidate()
+        first = int(dst[0, 0, 0])
+        last = int(dst[H - 1, W - 1, 0])
+        return first, last
+
     print(f"probing {frames} frames  (probe_start={filt.probe_start}, "
           f"done_latch={filt.done_latch})", flush=True)
-    slow = fails = 0
+    slow = fails = fast = 0
+    times = []
     t_start = time.perf_counter()
     for i in range(frames):
+        poison()
         t0 = time.perf_counter()
         try:
             filt.run_frames(src, dst, ref.MODE_SOBEL)
         except TimeoutError as exc:
             fails += 1
-            print(f"\n#### frame {i}: TIMEOUT\n{exc}\n", flush=True)
+            first, last = poison_state()
+            wrote_start = first != POISON
+            wrote_end = last != POISON
+            print(f"\n#### frame {i}: TIMEOUT\n{exc}", flush=True)
+            print(f"  destination: first word written={wrote_start}  "
+                  f"last word written={wrote_end}", flush=True)
+            print("  -> the frame RAN TO COMPLETION; only the completion was lost"
+                  if wrote_end else
+                  "  -> the frame did NOT finish writing; it never completed",
+                  flush=True)
             continue
         dt = (time.perf_counter() - t0) * 1e3
+        times.append(dt)
+        if dt < FAST_MS:
+            fast += 1
+            print(f"  frame {i}: FAST {dt:.3f} ms -- too quick to have run. "
+                  f"probe CTRL={filt.last_start_ctrl:#010x}", flush=True)
         if dt > SLOW_MS:
             slow += 1
             print(f"  frame {i}: SLOW {dt:.1f} ms   probe "
@@ -106,6 +144,11 @@ def main():
     print(f"  recovered : {filt.recovered_completions}"
           "   <- CTRL lost these, IP_ISR saved them")
     print(f"  slow      : {slow}")
+    print(f"  fast      : {fast}   <- returned without running a frame")
+    if times:
+        ts = sorted(times)
+        print(f"  frame time: min {ts[0]:.3f}  p50 {ts[len(ts)//2]:.3f}  "
+              f"max {ts[-1]:.3f} ms")
 
 
 if __name__ == "__main__":

@@ -140,12 +140,20 @@ def _timeout_message(timeout, state):
                        "the completion was lost, not the start")
         probe = (f"\n  at start: CTRL={sc:#010x}  {decode_ctrl(sc)}"
                  f"\n  {reading}")
+    fresh = ""
+    if "ctrl_fresh" in state:
+        cf = state["ctrl_fresh"]
+        fresh = (f"\n  fresh CTRL read at the deadline: {cf:#010x}  "
+                 f"{decode_ctrl(cf)}   after {state.get('polls', 0)} polls")
+        if cf & CTRL_AP_DONE:
+            fresh += ("\n  AP_DONE IS SET on a fresh read -- the poll was not "
+                      "seeing the hardware")
     return (
         f"accelerator did not assert AP_DONE within {timeout}s\n"
         f"  CTRL={state['ctrl']:#010x}  {state['flags']}\n"
         f"  src={state['src']:#010x}  dst={state['dst']:#010x}  "
         f"{state['img_width']}x{state['img_height']}  mode={state['mode']}\n"
-        f"  {verdict}{probe}{latch}")
+        f"  {verdict}{probe}{latch}{fresh}")
 
 
 class VideoFilter:
@@ -249,8 +257,10 @@ class VideoFilter:
         than it saves. CH11 polled for the same reason.
         """
         deadline = self._clock() + timeout
+        polls = 0
         while True:
             ctrl = self._ip.read(REG_CTRL)
+            polls += 1
             if ctrl & CTRL_AP_DONE:
                 return
             if self.done_latch and (self._ip.read(REG_ISR) & 1):
@@ -270,7 +280,7 @@ class VideoFilter:
                 # CTRL again. AP_DONE is clear-on-read: a diagnostic read here
                 # would consume a completion that arrived a moment late and
                 # turn a slow frame into a lost one.
-                state = self._diagnose(ctrl)
+                state = self._diagnose(ctrl, polls)
                 self.timeouts.append(state)
                 raise TimeoutError(_timeout_message(timeout, state))
 
@@ -332,7 +342,7 @@ class VideoFilter:
                         width, height, mode, timeout=timeout, retries=retries)
 
     # ---------------------------------------------------------- diagnostics
-    def _diagnose(self, ctrl):
+    def _diagnose(self, ctrl, polls=0):
         """Everything the hardware can be asked at the moment it timed out.
 
         CTRL alone separates the two things this failure can be, which is why
@@ -343,9 +353,14 @@ class VideoFilter:
         """
         # IP_ISR and IP_IER are ordinary reads with no side effects -- unlike
         # CTRL, reading them cannot consume anything.
+        # A FRESH read of CTRL, now that the frame is already lost. If this
+        # disagrees with the polled word, the poll was not seeing the hardware
+        # -- which is a different fault entirely from a completion that was
+        # generated and consumed.
         state = {"ctrl": ctrl, "flags": decode_ctrl(ctrl),
-                 "start_ctrl": self.last_start_ctrl,
-                 "isr": self._ip.read(REG_ISR), "ier": self._ip.read(REG_IER)}
+                 "start_ctrl": self.last_start_ctrl, "polls": polls,
+                 "isr": self._ip.read(REG_ISR), "ier": self._ip.read(REG_IER),
+                 "ctrl_fresh": self._ip.read(REG_CTRL)}
         state.update(self.register_map)
         return state
 

@@ -34,10 +34,30 @@ if {[lsearch -exact {sv vhdl hls} $variant] < 0} {
     error "variant must be sv, vhdl or hls -- got '$variant'"
 }
 
+# Optional: -tclargs <variant> ila puts a System ILA on the accelerator's
+# AXI4-Lite control port and its write master.
+#
+# This exists for the AP_DONE fault. About one frame in a thousand the
+# accelerator finishes -- the destination's last word is written, and IP_ISR
+# latches ap_done -- and yet AP_DONE never appears in CTRL across 400,000
+# polls. Five theories have been measured away, and software has run out of
+# visibility: the completion path between the write engine and the CTRL bit is
+# not memory-mapped, so no address shows what happens on it.
+#
+# The trigger to set is a CTRL read returning exactly 0x4 -- ap_idle set,
+# ap_done clear, ap_start clear. In normal operation that combination is never
+# read: the poll sees 0x6 (idle|done) and stops, and the first poll of a new
+# frame sees 0x5 (idle|start). 0x4 is the fault and nothing else.
+set want_ila 0
+if {[llength $argv] > 1 && [lindex $argv 1] eq "ila"} { set want_ila 1 }
+
 set proj_name camera_sobel_$variant
+if {$want_ila} { set proj_name camera_sobel_${variant}_ila }
 set proj_dir  $script_dir/vivado_$variant
+if {$want_ila} { set proj_dir $script_dir/vivado_${variant}_ila }
 set bd_name   design_1
 set out_dir   $script_dir/out_$variant
+if {$want_ila} { set out_dir $script_dir/out_${variant}_ila }
 set ip_repo   $script_dir/ip_repo_$variant
 # A separate repo: ch12_filter_vlnv and ch12_pixel_pack_vlnv each wipe the
 # directory they are handed before packaging into it.
@@ -235,6 +255,74 @@ set_property offset 0xA0010000 [get_bd_addr_segs {zynq_ultra_ps_e_0/Data/SEG_gam
 set_property offset 0xA0020000 [get_bd_addr_segs {zynq_ultra_ps_e_0/Data/SEG_gpio_ip_reset_Reg}]
 set_property offset 0xA0030000 [get_bd_addr_segs {zynq_ultra_ps_e_0/Data/SEG_pixel_pack_Reg}]
 set_property offset 0xA0040000 [get_bd_addr_segs {zynq_ultra_ps_e_0/Data/SEG_v_proc_sys_Reg}]
+
+# --- the ILA --------------------------------------------------------------
+if {$want_ila} {
+    # Find the nets from the PINS, not by name: Vivado auto-names interface
+    # nets after whichever end it feels like, and a name that drifts would
+    # instrument nothing while still building.
+    set debug_intf {s_axi_control m_axi_gmem1}
+    set marked {}
+    foreach n $debug_intf {
+        set net [get_bd_intf_nets -quiet \
+                     -of_objects [get_bd_intf_pins video_filter_0/$n]]
+        if {$net eq ""} {
+            error "ILA: nothing connected to video_filter_0/$n"
+        }
+        set_property HDL_ATTRIBUTE.DEBUG true $net
+        lappend marked $net
+        puts " ILA probe: video_filter_0/$n -> $net"
+    }
+    # Whatever clocks the accelerator is what the ILA must sample on.
+    set ila_clk [get_bd_pins -quiet \
+        -of_objects [get_bd_nets -of_objects [get_bd_pins video_filter_0/ap_clk]] \
+        -filter {DIR == O}]
+    if {$ila_clk eq ""} { error "ILA: cannot find the clock driving video_filter_0/ap_clk" }
+    puts " ILA clock: $ila_clk"
+
+    set autodict {}
+    foreach net $marked {
+        lappend autodict $net {AXI_R_ADDRESS "Data and Trigger" \
+                               AXI_R_DATA "Data and Trigger" \
+                               AXI_W_ADDRESS "Data and Trigger" \
+                               AXI_W_DATA "Data and Trigger" \
+                               AXI_W_RESPONSE "Data and Trigger" \
+                               CLK_SRC $ila_clk \
+                               SYSTEM_ILA "Auto" APC_EN "0"}
+    }
+    apply_bd_automation -rule xilinx.com:bd_rule:debug -dict $autodict
+
+    # The automation inserts the System ILAs but does not honour CLK_SRC here,
+    # leaving /system_ila_*/clk floating. That surfaces at validation as
+    # "clock pins are not connected to a valid clock source" naming a cell this
+    # script never created, which reads like a fault in the design rather than
+    # in automation that half-finished. Connect them explicitly.
+    foreach ila [get_bd_cells -quiet -filter {NAME =~ "system_ila*"}] {
+        set cp [get_bd_pins -quiet $ila/clk]
+        if {$cp ne "" && [get_bd_nets -quiet -of_objects $cp] eq ""} {
+            connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] $cp
+            puts " ILA: connected [get_property NAME $ila]/clk"
+        }
+        set rp [get_bd_pins -quiet $ila/resetn]
+        if {$rp ne "" && [get_bd_nets -quiet -of_objects $rp] eq ""} {
+            connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] $rp
+            puts " ILA: connected [get_property NAME $ila]/resetn"
+        }
+    }
+    # Depth and storage qualification are BUILD-time options on a System ILA:
+    # CONTROL.CAPTURE_MODE and CONTROL.DATA_DEPTH are read-only at run time.
+    # The defaults give 1024 samples with no qualification, which at 187.5 MHz
+    # is 5.5 us and captured exactly one read transfer -- useless against a
+    # fault whose history spans milliseconds. Storing only completed read
+    # transfers turns the buffer into 1024+ reads instead of 1024 cycles.
+    foreach ila [get_bd_cells -quiet -filter {NAME =~ "system_ila*"}] {
+        set_property -dict [list CONFIG.C_DATA_DEPTH {4096} \
+                                 CONFIG.C_EN_STRG_QUAL {1} \
+                                 CONFIG.C_ADV_TRIGGER {true}] $ila
+        puts " ILA: [get_property NAME $ila] depth=4096 storage-qualified"
+    }
+    puts " ILA: [llength $marked] AXI interfaces instrumented"
+}
 
 add_files -fileset constrs_1 -norecurse $script_dir/constraints/pins.xdc
 
