@@ -1262,14 +1262,14 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout, and what it actually is.** Intermittently the
-accelerator did not assert `AP_DONE` within 5 s. It reproduced in projects 2
-and 3, which share the accelerator. It is now understood, mitigated in
-software, and **not fixed in the RTL** — that distinction matters, so the
-evidence is set out in the order it was obtained.
+**The AP_DONE timeout, and what it is not.** Intermittently the accelerator
+does not assert `AP_DONE` within 5 s. It reproduces in projects 2 and 3, which
+share the accelerator, at roughly one frame in a thousand. It is **mitigated in
+software and not understood**. Two mechanisms have been proposed and both were
+refuted by measurement; what follows is set out in the order it was obtained,
+because the refutations are more useful than the guesses.
 
-`sw/filter_driver.py` reports the hardware state when it fires. The first
-finding killed the obvious theory:
+`sw/filter_driver.py` reports the hardware state when it fires:
 
 ```
 CTRL=0x00000004  ap_idle
@@ -1277,41 +1277,58 @@ src=0x7bb00000  dst=0x7c700000  1280x720  mode=1
 ap_idle is set: the kernel is NOT running
 ```
 
-`ap_idle` set rules out a datapath deadlock — nothing was running. The earlier
-draft of this section blamed the `ap_idle` guard on the CTRL write in
-`video_filter_ctrl.sv`, which discards a start silently and which Vitis HLS's
-control block does not have. **That was wrong.** `probe_start` reads CTRL one
-transaction after arming, when a launched kernel and a dropped write are still
-distinguishable, and in 18 timeouts out of 4000 frames it said the same thing
-every time:
+`ap_idle` set rules out a datapath deadlock — nothing was running. `probe_start`
+reads CTRL one transaction after arming, when a launched kernel and a dropped
+write are still distinguishable, and in 18 timeouts out of 4000 frames it said
+the same thing every time:
 
 ```
 at start: CTRL=0x00000001  ap_start
 the kernel DID launch -- ap_idle was already clear
 ```
 
-So the start always takes. And since `ap_idle` can only return to 1 through the
-`ap_done` branch, the frame also *finished*. `IP_ISR` bit 0 latches the same
-`ap_done` and is toggle-on-write rather than clear-on-read, so it cannot be
-lost the same way — and at every timeout it was set:
+Since `ap_idle` returns to 1 only through the `ap_done` branch, the frame also
+finished. `IP_ISR` bit 0 latches the same `ap_done` and is toggle-on-write
+rather than clear-on-read, and at every timeout it was set. So the completion
+**is generated and then lost** between the hardware and the poll.
 
-```
-IP_ISR=0x00000001 -- ap_done DID fire and was latched
-```
+**Refuted theory 1: the clear-on-read race.** `AP_DONE` in CTRL is
+clear-on-read, so the obvious suspect is a poll that consumes the bit without
+reporting it. `tb/tb_ctrl_race.sv` sweeps the `ap_done` pulse against a polling
+master across every cycle offset and every R-channel latency the interconnect
+could impose — 96 combinations — and the master observes `AP_DONE` exactly once
+in each. The control block does not lose it.
 
-**The completion is generated and then lost.** CTRL's `AP_DONE` is
-clear-on-read, and the poll loop that reads it is the only thing that clears
-it. Roughly one frame in a thousand, the bit goes missing between being set and
-being observed.
+**Refuted theory 2: the dropped start.** The same testbench shows that a CTRL
+write arriving while `ap_idle` is low was silently discarded, and that the state
+it leaves behind — `ap_idle` set, `ap_start` clear, no completion coming — is
+exactly the hardware signature. That looked conclusive. The guard was removed:
+a start arriving while busy is now queued and runs next, and the control block
+emits an explicit `ap_launch` strobe because an edge on `ap_start` cannot
+express a queued start. On hardware, with the software latch disabled, the
+fault **still occurred at the same rate** — 29 timeouts in 4000 frames. So the
+guard was a real defect, and not this one.
 
-`wait()` therefore also accepts the latched copy, consumes it, and **counts**
-it — a recovery is the race happening, not a non-event. `start()` clears a
-stale latch first, because `IP_ISR` is sticky and one left over from the
-previous frame would satisfy the next frame's first poll before any work had
-been done. With that in place: **4000 frames, 0 timeouts, 5 recoveries**, and a
-wall time of 20.7 s for 4000 frames, or 5.17 ms each — which agrees with the
-5.15 ms project 2 measures and is the check that the recoveries are real
-completions rather than early returns.
+That change is kept: it removes a path where a frame could be lost with no
+error, and it matches what Vitis HLS's control block does. It is not a fix for
+this fault and is not described as one.
+
+**What carries the design is the latched copy.** `wait()` also accepts
+`IP_ISR`, consumes it, and **counts** it — a recovery is the race happening,
+not a non-event. `start()` clears a stale latch first, because `IP_ISR` is
+sticky and one left over from the previous frame would satisfy the next frame's
+first poll before any work had been done. With that in place: **4000 frames,
+0 timeouts, 5 recoveries**, and a wall time of 20.7 s, or 5.17 ms a frame —
+which agrees with the 5.15 ms project 2 measures independently, and is the
+check that the recoveries are real completions rather than early returns.
+
+**The next step is an ILA, not a third theory.** Two hypotheses, each supported
+by a measurement, have both been wrong. Instrumenting `ap_start`, `ap_launch`,
+`ap_idle`, `ap_done` and the AXI4-Lite read channel, triggered on `ap_done`,
+would show a failing frame directly instead of inferring it from the wreckage
+five seconds later. That is how CH12's camera bugs were found, and this
+deserves the same. `project3_camera_sobel/probe_apdone.py --no-latch` measures
+the rate with the workaround out of the way.
 
 It is **on by default**, and armed on the first `start()` rather than in the
 constructor — a driver that touches registers while an IP is still in reset
