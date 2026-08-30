@@ -1217,13 +1217,14 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout.** Intermittently the accelerator does not assert
-`AP_DONE` within 5 s. It reproduces in projects 2 and 3, which share the
-accelerator, and it is not fatal to a run: the calls around it are correct and
-bit-exact.
+**The AP_DONE timeout, and what it actually is.** Intermittently the
+accelerator did not assert `AP_DONE` within 5 s. It reproduced in projects 2
+and 3, which share the accelerator. It is now understood, mitigated in
+software, and **not fixed in the RTL** — that distinction matters, so the
+evidence is set out in the order it was obtained.
 
-`sw/filter_driver.py` now reports the hardware state when it fires, and two
-captured occurrences say the same thing:
+`sw/filter_driver.py` reports the hardware state when it fires. The first
+finding killed the obvious theory:
 
 ```
 CTRL=0x00000004  ap_idle
@@ -1231,35 +1232,59 @@ src=0x7bb00000  dst=0x7c700000  1280x720  mode=1
 ap_idle is set: the kernel is NOT running
 ```
 
-**`ap_idle` set is the finding.** It rules out the obvious suspicion — this is
-not the datapath deadlocking mid-frame, because the datapath is not running at
-all. The argument registers read back exactly what was written, so the AXI4-Lite
-path is working. What did not happen is the launch.
+`ap_idle` set rules out a datapath deadlock — nothing was running. The earlier
+draft of this section blamed the `ap_idle` guard on the CTRL write in
+`video_filter_ctrl.sv`, which discards a start silently and which Vitis HLS's
+control block does not have. **That was wrong.** `probe_start` reads CTRL one
+transaction after arming, when a launched kernel and a dropped write are still
+distinguishable, and in 18 timeouts out of 4000 frames it said the same thing
+every time:
 
-That points at one line, `video_filter_ctrl.sv`:
-
-```systemverilog
-ADDR_CTRL: if (wstrb_r[0]) begin
-    if (wdata_r[0] && ap_idle) ap_start <= 1'b1;   // dropped when !ap_idle
-end
+```
+at start: CTRL=0x00000001  ap_start
+the kernel DID launch -- ap_idle was already clear
 ```
 
-A write of `ap_start` is discarded, silently, whenever `ap_idle` happens to be
-low at that instant — and the completion logic in the same `always_ff` sets
-`ap_idle` later in the block than this test reads it, so a CTRL write landing in
-the same cycle as `ap_done` sees the *old* `ap_idle` and is lost. Vitis HLS's
-generated control block has no such guard: it sets `ap_start` on any write of 1
-and lets the datapath clear it.
+So the start always takes. And since `ap_idle` can only return to 1 through the
+`ap_done` branch, the frame also *finished*. `IP_ISR` bit 0 latches the same
+`ap_done` and is toggle-on-write rather than clear-on-read, so it cannot be
+lost the same way — and at every timeout it was set:
 
-That is a mechanism which fits every observation, **not a demonstrated cause**.
-It has not been reproduced in simulation yet, and until it has it stays written
-down as a lead. The testbench does drive 19 back-to-back cases without a reset,
-so whatever the trigger is, it needs a timing relationship the testbench's
-zero-latency AXI-Lite model does not produce.
+```
+IP_ISR=0x00000001 -- ap_done DID fire and was latched
+```
 
-One occurrence in project 2 also showed two frames taking **3.4 s each while
-still coming out bit-exact**, which no version of "the start was dropped"
-explains on its own.
+**The completion is generated and then lost.** CTRL's `AP_DONE` is
+clear-on-read, and the poll loop that reads it is the only thing that clears
+it. Roughly one frame in a thousand, the bit goes missing between being set and
+being observed.
+
+`wait()` therefore also accepts the latched copy, consumes it, and **counts**
+it — a recovery is the race happening, not a non-event. `start()` clears a
+stale latch first, because `IP_ISR` is sticky and one left over from the
+previous frame would satisfy the next frame's first poll before any work had
+been done. With that in place: **4000 frames, 0 timeouts, 5 recoveries**, and a
+wall time of 20.7 s for 4000 frames, or 5.17 ms each — which agrees with the
+5.15 ms project 2 measures and is the check that the recoveries are real
+completions rather than early returns.
+
+**The RTL defect is still there.** Reading around a race is not fixing it. The
+losing cycle has not been located: the completion logic gives the set priority
+over the clear-on-read specifically so that a poll landing on the same cycle
+cannot lose it, and every trace through that path says it works. The testbench
+drives 19 back-to-back cases without a reset and does not reproduce it, which
+is itself a clue — its AXI4-Lite model answers with zero latency, and whatever
+this is needs a timing relationship that model cannot produce. Reproducing it
+in simulation is the next step, and until then no RTL change should be made on
+the strength of a theory.
+
+Two numbers were published in an earlier version of this section and withdrawn,
+for the same reason the display frame rates were once withdrawn: a recovery
+counter that fired whenever the completion landed between the CTRL read and the
+ISR read of the same poll, and a stale `IP_ISR` that let `wait()` return before
+the frame had run. Both inflated the loss rate by two orders of magnitude, and
+the second made a 4000-frame run finish in 13.6 s instead of 20.7. If an
+instrument disagrees with the wall clock, the instrument is wrong.
 
 **The stall is understood but not conclusively closed.** The SOF mechanism above
 is real, root-caused and fixed, with tests built from the literal hardware
