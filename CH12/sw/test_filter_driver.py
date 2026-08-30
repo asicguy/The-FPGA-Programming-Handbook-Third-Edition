@@ -225,5 +225,124 @@ class FrameLayoutTest(unittest.TestCase):
             fd.frame_address(FakeFrame((48, 64, 4), device_address=0), 64, 48)
 
 
+class RearmIP:
+    """A fake that completes only on the Nth arming, like a re-armed kernel.
+
+    Polls are counted from the last AP_START write, so a retry that does not
+    actually re-arm the hardware cannot be mistaken for one that does. While
+    busy it reports AP_IDLE and not AP_DONE -- the signature of a start that
+    was dropped rather than a frame still in flight, which is the case the
+    diagnostics exist to tell apart.
+    """
+
+    def __init__(self, succeed_on_attempt, clock):
+        self.succeed_on_attempt = succeed_on_attempt
+        self.attempts = 0
+        self.ctrl_reads = 0
+        self._clock = clock
+        self.regs = {}
+
+    def write(self, offset, value):
+        self.regs[offset] = value
+        if offset == fd.REG_CTRL and value & fd.CTRL_AP_START:
+            self.attempts += 1
+
+    def read(self, offset):
+        if offset == fd.REG_CTRL:
+            self.ctrl_reads += 1
+            self._clock.advance()
+            if self.attempts >= self.succeed_on_attempt:
+                return fd.CTRL_AP_DONE
+            return fd.CTRL_AP_IDLE
+        return self.regs.get(offset, 0)
+
+
+def rearm_driver(succeed_on_attempt, step=0.001):
+    clock = FakeClock(step=step)
+    ip = RearmIP(succeed_on_attempt, clock)
+    return fd.VideoFilter(ip, clock=clock), ip
+
+
+def timed_out(driver_, ip, **kwargs):
+    """Run a frame that will not complete; return the exception raised."""
+    driver_.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
+    try:
+        driver_.wait(timeout=0.01, **kwargs)
+    except TimeoutError as exc:
+        return exc
+    raise AssertionError("expected a TimeoutError")
+
+
+# --------------------------------------------------- diagnosing a timeout
+class TimeoutDiagnosticsTest(unittest.TestCase):
+    """What the exception has to say.
+
+    An AP_DONE timeout is intermittent and expensive to reproduce, so the one
+    that happens has to name its own cause. CTRL alone separates the two
+    possibilities: ap_idle set means the launch never took, ap_idle clear
+    means the kernel started and hung mid-frame.
+    """
+
+    def test_message_reports_the_control_register(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("0x00000004", str(timed_out(d, ip)))
+
+    def test_message_names_the_handshake_bits_that_are_set(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("ap_idle", str(timed_out(d, ip)))
+
+    def test_message_reports_the_frame_geometry_read_back_from_hardware(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("1280x720", str(timed_out(d, ip)))
+
+    def test_message_reports_the_mode_read_back_from_hardware(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("mode=1", str(timed_out(d, ip)))
+
+    def test_message_reports_the_source_address_read_back_from_hardware(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("0x70000000", str(timed_out(d, ip)))
+
+    def test_message_reports_the_destination_address_read_back_from_hardware(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        self.assertIn("0x80000000", str(timed_out(d, ip)))
+
+    def test_does_not_poll_the_control_register_again_for_diagnostics(self):
+        # AP_DONE is clear-on-read. A diagnostic read issued after the deadline
+        # would consume a completion that arrived late and turn a slow frame
+        # into a lost one, so the reported word is the last one polled.
+        # timeout / step = exactly ten polls, and no eleventh.
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertEqual(ip.ctrl_reads, 10)
+
+    def test_records_the_timeout_on_the_driver(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertEqual(len(d.timeouts), 1)
+
+    def test_the_record_carries_the_control_word(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertEqual(d.timeouts[0]["ctrl"], fd.CTRL_AP_IDLE)
+
+    def test_the_record_carries_the_arguments(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertEqual(d.timeouts[0]["img_width"], 1280)
+
+
+class DecodeCtrlTest(unittest.TestCase):
+    def test_names_every_bit_that_is_set(self):
+        self.assertEqual(fd.decode_ctrl(fd.CTRL_AP_DONE | fd.CTRL_AP_IDLE),
+                         "ap_done | ap_idle")
+
+    def test_says_so_when_nothing_is_set(self):
+        self.assertEqual(fd.decode_ctrl(0), "nothing set")
+
+    def test_names_auto_restart(self):
+        self.assertEqual(fd.decode_ctrl(fd.CTRL_AUTO_RESTART), "auto_restart")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
