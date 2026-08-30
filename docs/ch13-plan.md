@@ -167,9 +167,27 @@ Nothing reaches the board until the step before it passes.
 6. **On the board:** swap while the camera streams; confirm `kernel_id`,
    bit-exactness per RM, and the frame rate across a swap.
 
-Measure the reconfiguration time. If a ~1 MB partial takes single-digit
-milliseconds the swap is invisible mid-stream; if it takes tens, the chapter
-must say so rather than claim seamlessness.
+### 6.1 Reconfiguration time — a number, and what it costs the story
+
+The spike measured one: a ~980 KB partial took **399 ms** through PYNQ's
+`Bitstream(..., partial=True).download()`. That is 24 frames at 60 fps.
+
+**A swap is therefore not invisible mid-stream**, and the chapter must not
+imply it is. "Change the filter while the camera streams" is still true and
+still worth demonstrating; "without the viewer noticing" is not. The honest
+framing is that the pipeline stalls for about a quarter of a second and
+resumes with different hardware in the socket — which is a great deal better
+than a reboot, and should be presented as that rather than as seamlessness.
+
+Treat the figure as provisional: it was taken through Python and PYNQ rather
+than a tight loop, on a design with no decoupler, and the run panicked
+immediately afterwards. Re-measure it properly, and measure the PCAP transfer
+alone as well as the end-to-end call, before quoting it anywhere.
+
+If the number holds, it is worth asking what the partial's size is buying: the
+spike's partition was a whole clock region for a thirty-LUT module. A partition
+sized to the accelerator rather than to convenience may reconfigure
+proportionally faster, and that trade is itself a thing this chapter can show.
 
 ## 7. Board discipline
 
