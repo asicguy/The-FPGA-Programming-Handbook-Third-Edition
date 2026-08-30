@@ -459,23 +459,32 @@ the HP slave ports they land on are clocked from the same PL clock.
 
 | | SystemVerilog | VHDL | HLS |
 |---|---|---|---|
-| WNS | +0.466 ns | +0.414 ns | +0.477 ns |
-| Failing setup endpoints | **0** / 74720 | **0** / 74726 | **0** / 76592 |
+| WNS | +0.386 ns | +0.439 ns | +0.482 ns |
+| Failing setup endpoints | **0** / 75306 | **0** / 75312 | **0** / 79134 |
 | WHS | +0.010 ns | +0.010 ns | +0.010 ns |
-| Failing hold endpoints | **0** / 74586 | **0** / 74592 | **0** / 76460 |
-| CLB LUTs | **19043** | **19043** | 19461 |
-| CLB registers | **24866** | 24868 | 26761 |
+| Failing hold endpoints | **0** | **0** | **0** |
+| CLB LUTs | **19208** | **19203** | 20236 |
+| CLB registers | **24640** | 24642 | 27470 |
 | Block RAM tiles | **45** | **45** | 49.5 |
 | DSPs | **43** | **43** | 53 |
 
+Post-route signoff, not the router's estimate — the two differ by about 7 ps
+here, and it is the signoff number that means anything.
+
+The `sv` and `vhdl` rows are builds carrying the hand-written pixel packer; the
+`hls` row is HLS throughout, packer included, which is what `-tclargs hls` is
+for. So this is not a controlled comparison of the accelerators alone — that is
+what the out-of-context tables above are for — it is what each variant actually
+costs as a whole design.
+
 WNS is not bolded in that table, and deliberately. These three builds differ by
-60 ps across a 3.33 ns period, the critical path is in the camera datapath that
-all three share, and on the previous build — same sources, different placement —
-HLS had the *worst* WNS of the three rather than the best. That spread is
-placement noise. The area columns are the ones that mean something, and they say
-what the out-of-context numbers said: the two hand-written implementations are
-indistinguishable from each other and about 400 LUTs and 1900 flip-flops smaller
-than the HLS one.
+about 100 ps across a 3.33 ns period, the critical path is in the camera
+datapath that all three share, and on an earlier build — same sources,
+different placement — HLS had the *worst* WNS of the three rather than the
+best. That spread is placement noise. The area columns are the ones that mean
+something, and they say what the out-of-context numbers said: the two
+hand-written implementations are indistinguishable from each other, and about
+1000 LUTs, 2800 registers, 4.5 BRAM and 10 DSPs smaller than the HLS one.
 
 Per-clock setup margin, SystemVerilog build:
 
@@ -535,6 +544,40 @@ are the two 512×32 dataflow FIFOs in distributed RAM. HLS put most of its
 equivalent storage in block RAM instead — 5.5 tiles against 1 — which is the
 same storage billed to a different column, and a choice the RTL could equally
 make.
+
+### Out-of-context synthesis — the packer alone
+
+The same treatment for the block project 3 replaces, at the clock the camera
+datapath actually runs at rather than the accelerator's:
+
+```
+impl       WNS (ns)   Fmax MHz     LUTs  LUT logic    LUT mem      FFs     BRAM     DSPs
+sv            2.518     1227.0       83         83          0      208        0        0
+vhdl          2.518     1227.0       83         83          0      208        0        0
+hls           1.427      524.7      701        701          0     1143        0        0
+```
+
+The two hand-written versions are not merely close here, they are **identical**
+— same slack to the picosecond, same 83 LUTs, same 208 flip-flops. The
+accelerator's two differ by 8 LUTs; this design is small enough and direct
+enough that both languages give synthesis nothing to disagree about.
+
+**HLS costs 8.4× the LUTs and 5.5× the registers** for a function that is four
+lines of arithmetic. That is a much wider gap than the accelerator's 1.7×, and
+the reason is that the HLS packer is not this function: it is all five modes —
+24, 32, 8 and two flavours of 16 bpp — with the mode register selecting between
+them at run time, so every mode's datapath is on the die whether or not it is
+ever used. CH12 needs one of them, and one is what the RTL builds.
+
+That is the honest reading of this table, and it is not "HLS is 8× worse". It is
+the cost of generality nobody asked for. The fair comparison would be an HLS
+kernel written for 32bpp alone, which would be a great deal closer — the
+accelerator's 1.7× is the number to reason from when both implementations do the
+same job.
+
+Neither version is near its timing budget: 3.33 ns is the constraint and the
+RTL closes it with 2.5 ns to spare. A packer is not where a camera pipeline
+runs out of margin.
 
 ### The bug the resource comparison found
 
@@ -1164,8 +1207,8 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 - Verilator `-Wall`: clean. `dtc` on the overlays: no warnings.
 - All nine bitstreams: built, **zero failing setup and hold endpoints**, zero
   critical warnings, zero errors. Project 3's `sv` and `vhdl` were rebuilt when
-  the packer changed: WNS +0.379 / +0.432 ns, WHS +0.010 ns both, still zero
-  failing endpoints and zero critical warnings.
+  the packer changed: post-route WNS +0.386 / +0.439 ns, WHS +0.010 ns both,
+  still zero failing endpoints and zero critical warnings.
 - `common/check_hwh.py` on every `.hwh`.
 
 ### On the board
