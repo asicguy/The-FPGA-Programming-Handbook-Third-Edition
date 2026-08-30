@@ -1150,16 +1150,22 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Run, and passing
 
-- `sw/` — 175 unit tests across four files (89 for the filter and the golden
-  model, 86 for the camera driver).
+- `sw/` — 218 unit tests across five files (89 for the filter and the golden
+  model, 86 for the camera driver, 22 for the packer, 21 for the accelerator
+  driver's timeout diagnostics and retry).
 - HLS C simulation — 36 cases, four modes over nine frame sizes.
 - The Python golden model against the HLS kernel — **identical, zero differing
   samples** over the same 36 combinations.
 - The RTL testbench against all three implementations — 19 cases plus a
   register-map check; SystemVerilog and VHDL cycle-identical.
+- The packer testbench against both implementations — 926,216 beat checks and
+  10 register checks, 0 errors, SystemVerilog and VHDL cycle-identical. Checked
+  against a deliberately broken packer first, so a pass means something.
 - Verilator `-Wall`: clean. `dtc` on the overlays: no warnings.
 - All nine bitstreams: built, **zero failing setup and hold endpoints**, zero
-  critical warnings, zero errors.
+  critical warnings, zero errors. Project 3's `sv` and `vhdl` were rebuilt when
+  the packer changed: WNS +0.379 / +0.432 ns, WHS +0.010 ns both, still zero
+  failing endpoints and zero critical warnings.
 - `common/check_hwh.py` on every `.hwh`.
 
 ### On the board
@@ -1177,38 +1183,83 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
   183.0 Mpixel/s, and the full cost and frame-rate tables above.
   `ch12_p2_video_sobel.ipynb` executes top to bottom under `nbconvert`.
 - **Project 3** — live camera through the accelerator, all four modes on the
-  screen:
+  screen, built `sv` so that every block in the datapath is hand-written
+  SystemVerilog, packer included:
 
   | mode | per frame | rate |
   |---|---|---|
   | gray | 5.04 ms | 182.9 Mpixel/s |
-  | sobel | 5.04 ms | 182.9 Mpixel/s |
-  | invert | 5.04 ms | 182.9 Mpixel/s |
-  | colour | 5.03 ms | 183.2 Mpixel/s |
+  | sobel | 5.35 ms | 172.3 Mpixel/s |
+  | invert | 5.30 ms | 173.9 Mpixel/s |
+  | colour | 5.24 ms | 175.9 Mpixel/s |
 
-  Within 0.1 ms of the 5.14 ms project 2 measured on a stored clip. The
-  accelerator does not care where the pixels came from, which is the entire
-  argument for the memory-mapped interface — and the input is zero-copy, since
-  `readframe()` returns a VDMA buffer whose physical address goes straight into
-  the source register. Identical timing across all four modes confirms it is
-  DDR-bound: the Sobel costs exactly what a passthrough costs.
+  Re-measured after the hand-written packer replaced PYNQ's HLS one, since the
+  camera datapath changed. These are single measurements rather than the median
+  of forty that project 2 reports, which is where the spread comes from — the
+  timing table in project 2, taken the same day on the same accelerator, has all
+  four modes within 0.01 ms of each other. Nothing here suggests the packer
+  costs anything: it is not in the accelerator's path at all, it feeds the VDMA.
 
-  The display loop runs at 28.4 fps, and that ceiling is the 32→24 bpp
-  conversion, not the filter — 5 ms of accelerator against ~19 ms of
-  `cvtColor` and a 16.7 ms vsync.
+  All four are within 0.25 ms of the 5.15 ms project 2 measured on a stored
+  clip. The accelerator does not care where the pixels came from, which is the
+  entire argument for the memory-mapped interface — and the input is zero-copy,
+  since `readframe()` returns a VDMA buffer whose physical address goes straight
+  into the source register. Flat cost across all four modes confirms it is
+  DDR-bound: the Sobel costs what a passthrough costs.
+
+  Bit-exact against `sobel_ref` on a live camera frame: **0 differing samples,
+  max difference 0**. The camera frame arrives 4 bytes per pixel with a stride
+  of 5120 for 1280 pixels, which is the hand-written packer doing its job.
+
+  The display loop runs at 28.1 fps (OpenCV 27.7, NumPy 5.7), and that ceiling
+  is the 32→24 bpp conversion, not the filter — 5 ms of accelerator against
+  ~22 ms of `cvtColor` and a 16.7 ms vsync.
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout.** Twice, on the first calls after a fresh PL download,
-the accelerator did not assert `AP_DONE` within 5 s. Against an already-running
-design it took 20+ consecutive calls — all four modes, eight repetitions,
-VDMA-sourced and `allocate`-sourced — without a miss. `p3_live.py` re-arms and
-retries, logging every occurrence rather than swallowing it.
+**The AP_DONE timeout.** Intermittently the accelerator does not assert
+`AP_DONE` within 5 s. It reproduces in projects 2 and 3, which share the
+accelerator, and it is not fatal to a run: the calls around it are correct and
+bit-exact.
 
-It is tempting to file this under the same startup race as the VDMA's SOF error
-— both appear only after a fresh download, both are clean when attaching — and
-that may well be right. It has not been demonstrated, so it is written down as
-a suspicion and not a conclusion.
+`sw/filter_driver.py` now reports the hardware state when it fires, and two
+captured occurrences say the same thing:
+
+```
+CTRL=0x00000004  ap_idle
+src=0x7bb00000  dst=0x7c700000  1280x720  mode=1
+ap_idle is set: the kernel is NOT running
+```
+
+**`ap_idle` set is the finding.** It rules out the obvious suspicion — this is
+not the datapath deadlocking mid-frame, because the datapath is not running at
+all. The argument registers read back exactly what was written, so the AXI4-Lite
+path is working. What did not happen is the launch.
+
+That points at one line, `video_filter_ctrl.sv`:
+
+```systemverilog
+ADDR_CTRL: if (wstrb_r[0]) begin
+    if (wdata_r[0] && ap_idle) ap_start <= 1'b1;   // dropped when !ap_idle
+end
+```
+
+A write of `ap_start` is discarded, silently, whenever `ap_idle` happens to be
+low at that instant — and the completion logic in the same `always_ff` sets
+`ap_idle` later in the block than this test reads it, so a CTRL write landing in
+the same cycle as `ap_done` sees the *old* `ap_idle` and is lost. Vitis HLS's
+generated control block has no such guard: it sets `ap_start` on any write of 1
+and lets the datapath clear it.
+
+That is a mechanism which fits every observation, **not a demonstrated cause**.
+It has not been reproduced in simulation yet, and until it has it stays written
+down as a lead. The testbench does drive 19 back-to-back cases without a reset,
+so whatever the trigger is, it needs a timing relationship the testbench's
+zero-latency AXI-Lite model does not produce.
+
+One occurrence in project 2 also showed two frames taking **3.4 s each while
+still coming out bit-exact**, which no version of "the start was dropped"
+explains on its own.
 
 **The stall is understood but not conclusively closed.** The SOF mechanism above
 is real, root-caused and fixed, with tests built from the literal hardware
