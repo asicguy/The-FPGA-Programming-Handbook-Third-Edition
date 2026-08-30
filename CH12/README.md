@@ -1150,9 +1150,9 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Run, and passing
 
-- `sw/` — 218 unit tests across five files (89 for the filter and the golden
-  model, 86 for the camera driver, 22 for the packer, 21 for the accelerator
-  driver's timeout diagnostics and retry).
+- `sw/` — 241 unit tests across five files (89 for the filter and the golden
+  model, 86 for the camera driver, 22 for the packer, and 44 for the
+  accelerator driver's timeout diagnostics, retry and completion latch).
 - HLS C simulation — 36 cases, four modes over nine frame sizes.
 - The Python golden model against the HLS kernel — **identical, zero differing
   samples** over the same 36 combinations.
@@ -1184,7 +1184,9 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
   `ch12_p2_video_sobel.ipynb` executes top to bottom under `nbconvert`.
 - **Project 3** — live camera through the accelerator, all four modes on the
   screen, built `sv` so that every block in the datapath is hand-written
-  SystemVerilog, packer included:
+  SystemVerilog, packer included. `ch12_p3_camera_sobel.ipynb` executes top to
+  bottom under `nbconvert` from a fresh boot, **zero errors, every cell**, with
+  no AP_DONE timeout anywhere in the run:
 
   | mode | per frame | rate |
   |---|---|---|
@@ -1267,6 +1269,16 @@ been done. With that in place: **4000 frames, 0 timeouts, 5 recoveries**, and a
 wall time of 20.7 s for 4000 frames, or 5.17 ms each — which agrees with the
 5.15 ms project 2 measures and is the check that the recoveries are real
 completions rather than early returns.
+
+It is **on by default**, and armed on the first `start()` rather than in the
+constructor — a driver that touches registers while an IP is still in reset
+wedges this board rather than raising. Nothing else uses `IP_ISR`, and
+`IP_IER` bit 0 on its own raises no interrupt because `GIER` is zero, so there
+is nothing traded away. `done_latch = False` gives the raw behaviour back.
+
+Opt-in would have been the tidier choice and it was the wrong one: the fix
+existed for a day while every notebook still failed, because no notebook asked
+for it. A mitigation nothing reaches is not a mitigation.
 
 **The RTL defect is still there.** Reading around a race is not fixing it. The
 losing cycle has not been located: the completion logic gives the set priority
