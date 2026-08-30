@@ -50,6 +50,21 @@ class FakeIP:
         raise AssertionError(f"nothing was written to offset {offset:#x}")
 
 
+class ReadTrapIP:
+    """A DefaultIP whose registers must not be touched at construction.
+
+    On this board an IP can be held in reset when its driver is built, and a
+    transaction to one does not raise -- it wedges the CPU with no console.
+    So construction is required to be inert, and this fails loudly instead.
+    """
+
+    def read(self, offset):
+        raise AssertionError("the driver read a register during construction")
+
+    def write(self, offset, value):
+        raise AssertionError("the driver wrote a register during construction")
+
+
 class FakeClock:
     """A clock that moves when the hardware is polled, not when it is read.
 
@@ -478,11 +493,13 @@ class DoneLatchTest(unittest.TestCase):
 
     def test_the_timeout_reports_the_latched_status(self):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.done_latch = False          # else the frame is recovered, not lost
         ip.regs[fd.REG_ISR] = 1
         self.assertIn("IP_ISR", str(timed_out(d, ip)))
 
     def test_a_latched_done_says_the_completion_was_lost(self):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.done_latch = False          # else the frame is recovered, not lost
         ip.regs[fd.REG_ISR] = 1
         self.assertIn("ap_done DID fire", str(timed_out(d, ip)))
 
@@ -493,6 +510,7 @@ class DoneLatchTest(unittest.TestCase):
 
     def test_the_record_carries_the_status(self):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.done_latch = False          # else the frame is recovered, not lost
         ip.regs[fd.REG_ISR] = 1
         timed_out(d, ip)
         self.assertEqual(d.timeouts[0]["isr"], 1)
@@ -531,12 +549,39 @@ class LatchedCompletionTest(unittest.TestCase):
         d.wait(timeout=0.01)
         self.assertEqual(d.recovered_completions, 1)
 
-    def test_the_latch_is_ignored_when_it_was_never_enabled(self):
+    def test_the_latch_is_ignored_when_it_is_turned_off(self):
         d, ip = rearm_driver(succeed_on_attempt=10**9)
+        d.done_latch = False
         ip.regs[fd.REG_ISR] = 1
         d.configure(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL)
         with self.assertRaises(TimeoutError):
             d.wait(timeout=0.01)
+
+    def test_the_latch_is_on_by_default(self):
+        # The race costs a 5 s stall and an exception in a notebook that has
+        # done nothing wrong. Nothing else uses IP_ISR, and IP_IER bit 0 alone
+        # raises no interrupt because GIER is zero, so there is no reason to
+        # make every caller ask for it.
+        d, _ = rearm_driver(succeed_on_attempt=1)
+        self.assertTrue(d.done_latch)
+
+    def test_construction_touches_no_registers(self):
+        # Learned the hard way: a driver that reads or writes in __init__ can
+        # hit an IP that is still in reset, and on ZynqMP that wedges the CPU
+        # rather than raising. Arming is deferred to the first start().
+        ip = ReadTrapIP()
+        fd.VideoFilter(ip)                      # must not raise
+
+    def test_the_first_arm_enables_the_interrupt_status(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.start()
+        self.assertEqual(ip.regs[fd.REG_IER], 1)
+
+    def test_it_can_be_turned_off(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.done_latch = False
+        d.start()
+        self.assertNotIn(fd.REG_IER, ip.regs)
 
     def test_arming_clears_a_stale_latch(self):
         # IP_ISR is sticky. Left set from the previous frame it would satisfy

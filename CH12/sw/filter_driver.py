@@ -174,7 +174,14 @@ class VideoFilter:
         # Set by enable_done_latch(). Counts completions that CTRL lost and
         # IP_ISR saved -- a recovery is not a non-event, it is the race
         # happening, and the number belongs in the chapter.
-        self._done_latch = False
+        # On by default. CTRL's AP_DONE is clear-on-read and about one frame in
+        # a thousand goes missing between being set and being polled; IP_ISR
+        # latches the same event and cannot be lost that way. Nothing else uses
+        # IP_ISR, and IP_IER bit 0 on its own raises no interrupt because GIER
+        # is zero, so there is nothing to trade away. Set `done_latch = False`
+        # to see the raw behaviour.
+        self.done_latch = True
+        self._latch_armed = False
         self.recovered_completions = 0
 
     # ------------------------------------------------------------- arguments
@@ -201,7 +208,12 @@ class VideoFilter:
     # ----------------------------------------------------------- handshake
     def start(self):
         """Pulse AP_START. The kernel is `ap_ctrl_hs`, so this runs one frame."""
-        if self._done_latch:
+        if self.done_latch:
+            # Deferred to here rather than done in __init__: a constructor that
+            # touches registers can hit an IP still held in reset, and on
+            # ZynqMP that does not raise, it wedges the CPU.
+            if not self._latch_armed:
+                self.enable_done_latch()
             # IP_ISR is toggle-on-write and therefore sticky. A bit left over
             # from the previous frame would satisfy this frame's first poll,
             # returning before any work had been done -- so clear it here,
@@ -215,15 +227,18 @@ class VideoFilter:
     def enable_done_latch(self):
         """Make IP_ISR bit 0 latch every ap_done.
 
+        Called automatically by the first `start()` when `done_latch` is set,
+        which it is by default. It exists separately so a script can arm the
+        latch without running a frame.
+
         CTRL's AP_DONE is clear-on-read: a poll that races the completion can
         take the bit away without reporting it, and then nothing remembers the
         frame finished. ISR is toggle-on-write, so once latched it stays until
         it is explicitly cleared -- which makes it the one place a lost
-        completion leaves a trace. It only latches when IP_IER bit 0 is on,
-        and nothing turns that on by default.
+        completion leaves a trace. It only latches when IP_IER bit 0 is on.
         """
         self._ip.write(REG_IER, 1)
-        self._done_latch = True
+        self._latch_armed = True
 
     def wait(self, timeout=DEFAULT_TIMEOUT):
         """Poll CTRL until AP_DONE. Raises TimeoutError rather than spinning.
@@ -238,7 +253,7 @@ class VideoFilter:
             ctrl = self._ip.read(REG_CTRL)
             if ctrl & CTRL_AP_DONE:
                 return
-            if self._done_latch and (self._ip.read(REG_ISR) & 1):
+            if self.done_latch and (self._ip.read(REG_ISR) & 1):
                 # ISR says the frame finished. That alone does not mean CTRL
                 # lost anything: the completion may simply have landed in the
                 # microseconds between this iteration's CTRL read and its ISR
