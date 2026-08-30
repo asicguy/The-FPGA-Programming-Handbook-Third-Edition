@@ -2,7 +2,14 @@
 """Hunt the AP_DONE completion race, and measure how often it fires.
 
     sudo env XILINX_XRT=/usr /usr/local/share/pynq-venv/bin/python3 \
-        probe_apdone.py [frames]
+        probe_apdone.py [frames] [--no-latch] [--download]
+
+  --no-latch   turn off the IP_ISR completion latch, so what is measured is
+               the hardware alone rather than the software working around it.
+               Use this to decide whether an RTL change actually fixed
+               something; with the latch on, a fault is recovered and counted
+               rather than seen.
+  --download   program the PL first, instead of attaching to what is loaded.
 
 This is the tool that placed the fault described under "The AP_DONE timeout,
 and what it actually is" in CH12/README.md, and it is kept because the fault is
@@ -52,13 +59,19 @@ SLOW_MS = 20.0          # a frame is nominally ~5 ms
 
 
 def main():
-    frames = int(sys.argv[1]) if len(sys.argv) > 1 else 4000
+    args = sys.argv[1:]
+    no_latch = "--no-latch" in args
+    download = "--download" in args
+    nums = [a for a in args if not a.startswith("--")]
+    frames = int(nums[0]) if nums else 4000
     if not os.path.exists(BIT):
         raise SystemExit(f"{BIT} not found -- build project 3 first")
 
-    ol = Overlay(BIT, download=False)       # attach, do not reprogram
+    ol = Overlay(BIT, download=download)
     filt = VideoFilter(ol.video_filter_0)
     filt.probe_start = True                 # place the fault, not just report it
+    if no_latch:
+        filt.done_latch = False
 
     src = allocate(shape=(H, W, 4), dtype=np.uint8)
     dst = allocate(shape=(H, W, 4), dtype=np.uint8)
