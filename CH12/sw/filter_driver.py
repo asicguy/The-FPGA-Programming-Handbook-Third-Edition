@@ -121,12 +121,31 @@ def _timeout_message(timeout, state):
         verdict = ("ap_idle is clear: the kernel started and did not finish, so "
                    "it is hung part-way through the frame above -- check that "
                    "both buffers are physically addressable and contiguous")
+    latch = ""
+    if state.get("isr", 0) & 1:
+        latch = ("\n  IP_ISR=0x%08x -- ap_done DID fire and was latched, so the "
+                 "completion\n  was lost between the hardware and the poll, not "
+                 "never generated" % state["isr"])
+    elif "isr" in state:
+        latch = (f"\n  IP_ISR={state['isr']:#010x}  IP_IER={state['ier']:#010x}"
+                 f"  (IER bit 0 must be set for ISR to latch anything)")
+    probe = ""
+    sc = state.get("start_ctrl")
+    if sc is not None:
+        if sc & CTRL_AP_IDLE:
+            reading = ("AP_START never took -- still idle one transaction "
+                       "after arming, so the write was dropped")
+        else:
+            reading = ("the kernel DID launch -- ap_idle was already clear, so "
+                       "the completion was lost, not the start")
+        probe = (f"\n  at start: CTRL={sc:#010x}  {decode_ctrl(sc)}"
+                 f"\n  {reading}")
     return (
         f"accelerator did not assert AP_DONE within {timeout}s\n"
         f"  CTRL={state['ctrl']:#010x}  {state['flags']}\n"
         f"  src={state['src']:#010x}  dst={state['dst']:#010x}  "
         f"{state['img_width']}x{state['img_height']}  mode={state['mode']}\n"
-        f"  {verdict}")
+        f"  {verdict}{probe}{latch}")
 
 
 class VideoFilter:
@@ -149,6 +168,10 @@ class VideoFilter:
         # The fault is intermittent, so a run that retried past one still has
         # to be able to say that it did -- see `wait`.
         self.timeouts = []
+        # Opt-in: read CTRL once immediately after AP_START. See `run`.
+        self.probe_start = False
+        self.last_start_ctrl = None
+        self._done_latch = False
 
     # ------------------------------------------------------------- arguments
     def configure(self, src_addr, dst_addr, width, height, mode):
@@ -175,6 +198,19 @@ class VideoFilter:
     def start(self):
         """Pulse AP_START. The kernel is `ap_ctrl_hs`, so this runs one frame."""
         self._ip.write(REG_CTRL, CTRL_AP_START)
+
+    def enable_done_latch(self):
+        """Make IP_ISR bit 0 latch every ap_done.
+
+        CTRL's AP_DONE is clear-on-read: a poll that races the completion can
+        take the bit away without reporting it, and then nothing remembers the
+        frame finished. ISR is toggle-on-write, so once latched it stays until
+        it is explicitly cleared -- which makes it the one place a lost
+        completion leaves a trace. It only latches when IP_IER bit 0 is on,
+        and nothing turns that on by default.
+        """
+        self._ip.write(REG_IER, 1)
+        self._done_latch = True
 
     def wait(self, timeout=DEFAULT_TIMEOUT):
         """Poll CTRL until AP_DONE. Raises TimeoutError rather than spinning.
@@ -219,6 +255,19 @@ class VideoFilter:
             self.configure(src_addr, dst_addr, width, height, mode)
             t0 = self._clock()
             self.start()
+            if self.probe_start:
+                # The one measurement that separates the two things an
+                # ap_idle timeout can mean. After the deadline they are
+                # indistinguishable -- ap_idle set, nothing running -- because
+                # a kernel that launched and finished also ends up idle. One
+                # transaction after arming they are still distinct: a launched
+                # kernel has already cleared ap_idle, a dropped write has not.
+                #
+                # Off by default because it costs an AXI4-Lite read on every
+                # frame, and because reading CTRL clears AP_DONE -- harmless
+                # here only because a frame takes milliseconds and cannot have
+                # completed yet.
+                self.last_start_ctrl = self._ip.read(REG_CTRL)
             try:
                 self.wait(timeout=timeout)
             except TimeoutError:
@@ -252,7 +301,11 @@ class VideoFilter:
         not finished, so it is hung part-way through the geometry reported
         alongside.
         """
-        state = {"ctrl": ctrl, "flags": decode_ctrl(ctrl)}
+        # IP_ISR and IP_IER are ordinary reads with no side effects -- unlike
+        # CTRL, reading them cannot consume anything.
+        state = {"ctrl": ctrl, "flags": decode_ctrl(ctrl),
+                 "start_ctrl": self.last_start_ctrl,
+                 "isr": self._ip.read(REG_ISR), "ier": self._ip.read(REG_IER)}
         state.update(self.register_map)
         return state
 

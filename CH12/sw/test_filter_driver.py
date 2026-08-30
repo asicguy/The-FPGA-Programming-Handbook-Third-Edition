@@ -243,6 +243,12 @@ class RearmIP:
         self.regs = {}
 
     def write(self, offset, value):
+        if offset == fd.REG_ISR:
+            # Toggle-on-write, the way video_filter_ctrl.sv implements it
+            # (`isr <= isr ^ wdata_r[1:0]`). Storing the value verbatim would
+            # let a driver that never actually clears the status pass.
+            self.regs[offset] = self.regs.get(offset, 0) ^ value
+            return
         self.regs[offset] = value
         if offset == fd.REG_CTRL and value & fd.CTRL_AP_START:
             self.attempts += 1
@@ -398,6 +404,98 @@ class RetryTest(unittest.TestCase):
         dst = FakeFrame((48, 64, 4), device_address=0x8000_0000)
         d.run_frames(src, dst, ref.MODE_SOBEL, timeout=0.01, retries=1)
         self.assertEqual(ip.attempts, 2)
+
+
+# ------------------------------------------------- did the start take at all?
+class StartProbeTest(unittest.TestCase):
+    """One read, immediately after AP_START, to split the two things an
+    ap_idle timeout can mean.
+
+    After the 5 s deadline both look identical -- ap_idle set, nothing
+    running. They separate only at the instant the start was written: if the
+    kernel launched, ap_idle is already low one transaction later; if the write
+    was dropped, ap_start reads back 0 and ap_idle is still 1. Opt-in, because
+    it costs an extra AXI4-Lite read on every frame.
+    """
+
+    def test_is_off_by_default(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.run(0, 0, 64, 48, ref.MODE_SOBEL, timeout=0.01)
+        self.assertEqual(ip.ctrl_reads, 1)      # the wait poll, and nothing else
+
+    def test_reads_the_control_register_once_after_arming(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.probe_start = True
+        d.run(0, 0, 64, 48, ref.MODE_SOBEL, timeout=0.01)
+        self.assertEqual(ip.ctrl_reads, 2)      # the probe, then the wait poll
+
+    def test_records_what_the_probe_saw(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.probe_start = True
+        d.run(0, 0, 64, 48, ref.MODE_SOBEL, timeout=0.01)
+        self.assertEqual(d.last_start_ctrl, fd.CTRL_AP_DONE)
+
+    def timed_out_run(self, d):
+        """The probe happens in run(), so these have to go through run()."""
+        try:
+            d.run(0x7000_0000, 0x8000_0000, 1280, 720, ref.MODE_SOBEL,
+                  timeout=0.01)
+        except TimeoutError as exc:
+            return exc
+        raise AssertionError("expected a TimeoutError")
+
+    def test_the_timeout_message_reports_it(self):
+        d, _ = rearm_driver(succeed_on_attempt=10**9)
+        d.probe_start = True
+        self.assertIn("at start", str(self.timed_out_run(d)))
+
+    def test_the_timeout_message_says_the_start_was_dropped(self):
+        # RearmIP reports AP_IDLE while busy, which is the dropped-start
+        # signature: armed, yet still idle one transaction later.
+        d, _ = rearm_driver(succeed_on_attempt=10**9)
+        d.probe_start = True
+        self.assertIn("never took", str(self.timed_out_run(d)))
+
+    def test_the_record_is_absent_when_the_probe_is_off(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        timed_out(d, ip)
+        self.assertIsNone(d.last_start_ctrl)
+
+
+# ------------------------------------------- the interrupt-status shadow copy
+class DoneLatchTest(unittest.TestCase):
+    """IP_ISR bit 0 latches the same ap_done that CTRL reports.
+
+    CTRL's copy is clear-on-read, so a poll that races the completion can
+    consume it; ISR is toggle-on-write and cannot be lost that way. It only
+    latches when IP_IER bit 0 is enabled, which nothing does by default.
+    """
+
+    def test_enabling_the_latch_writes_the_interrupt_enable(self):
+        d, ip = rearm_driver(succeed_on_attempt=1)
+        d.enable_done_latch()
+        self.assertEqual(ip.regs[fd.REG_IER], 1)
+
+    def test_the_timeout_reports_the_latched_status(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        ip.regs[fd.REG_ISR] = 1
+        self.assertIn("IP_ISR", str(timed_out(d, ip)))
+
+    def test_a_latched_done_says_the_completion_was_lost(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        ip.regs[fd.REG_ISR] = 1
+        self.assertIn("ap_done DID fire", str(timed_out(d, ip)))
+
+    def test_an_unlatched_done_does_not_claim_it_fired(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        ip.regs[fd.REG_ISR] = 0
+        self.assertNotIn("ap_done DID fire", str(timed_out(d, ip)))
+
+    def test_the_record_carries_the_status(self):
+        d, ip = rearm_driver(succeed_on_attempt=10**9)
+        ip.regs[fd.REG_ISR] = 1
+        timed_out(d, ip)
+        self.assertEqual(d.timeouts[0]["isr"], 1)
 
 
 if __name__ == "__main__":
