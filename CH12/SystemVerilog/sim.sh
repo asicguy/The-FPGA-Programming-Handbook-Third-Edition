@@ -4,6 +4,8 @@
 #   source /opt/Xilinx/2025.2/Vivado/settings64.sh
 #   ./sim.sh            the hand-written SystemVerilog
 #   ./sim.sh --hls      the Verilog Vitis HLS generated
+#   ./sim.sh --pack     the pixel packer, project 3's replacement for PYNQ's
+#                       HLS pixel_pack_2 (tb/tb_pixel_pack.sv)
 #
 # Both bind the same testbench, tb/tb_video_filter.sv, through a per-DUT
 # wrapper -- see tb/dut_rtl.sv for why a wrapper is needed at all.
@@ -17,10 +19,12 @@ set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
 USE_HLS=0
+USE_PACK=0
 for arg in "$@"; do
     case "$arg" in
         --hls) USE_HLS=1 ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        --pack) USE_PACK=1 ;;
+        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -29,6 +33,15 @@ done
 HLS_RTL="$PWD/../HLS/video_filter/hls/syn/verilog"
 
 mkdir -p build && cd build
+
+# The packer is a separate design with its own testbench, so it gets its own
+# path rather than another DUT wrapper on the filter's.
+if [ "$USE_PACK" = 1 ]; then
+    xvlog -sv -nolog ../hdl/pixel_pack.sv ../tb/tb_pixel_pack.sv
+    xelab -nolog -debug typical tb_pixel_pack -s tb_pack
+    xsim tb_pack -nolog -runall
+    exit 0
+fi
 
 if [ "$USE_HLS" = 1 ]; then
     if [ ! -d "$HLS_RTL" ]; then

@@ -170,7 +170,9 @@ window, so it owes no delay — and the totals still come to W×H either way.
 source /opt/Xilinx/2025.2/Vivado/settings64.sh
 cd SystemVerilog && ./sim.sh          # the hand-written SystemVerilog
                     ./sim.sh --hls    # the Verilog Vitis HLS generated
+                    ./sim.sh --pack   # the pixel packer
 cd ../VHDL        && ./sim.sh         # mixed-language: VHDL DUT, same testbench
+                     ./sim.sh --pack  # the pixel packer, in VHDL
 ```
 
 One testbench, three DUTs. The VHDL build does not copy it — `VHDL/sim.sh`
@@ -224,6 +226,32 @@ fatal downstream as one that writes too few and would otherwise pass.
 against its own C testbench, whereas this checks the generated RTL against the
 same stimulus and the same golden model the other two implementations face.
 
+`./sim.sh --pack` runs the other design in this repo, the camera's pixel packer,
+against `tb/tb_pixel_pack.sv`. Same arrangement — one testbench, two DUTs, the
+VHDL one bound by name — and both come out identical:
+
+```
+  [        64x48 no stall] 64x48  alpha=00  bp=0%  1536 beats
+  [         64x48 stalled] 64x48  alpha=ff  bp=30%  1536 beats
+  [     64x48 heavy stall] 64x48  alpha=80  bp=60%  1536 beats
+  [   2x8 one beat a line] 2x8  alpha=00  bp=30%  8 beats
+  [     1280x720 no stall] 1280x720  alpha=00  bp=0%  460800 beats
+  [      1280x720 stalled] 1280x720  alpha=00  bp=20%  460800 beats
+
+PASS -- 926216 beat checks, 10 register checks, 0 errors
+```
+
+The packer is four lines of arithmetic, so what the testbench is really for is
+everything around it. TUSER is start-of-frame and TLAST is end-of-line, and the
+VDMA tears the picture if either lands on the wrong beat — so every beat is
+checked for both, backpressure is randomised on *both* streams so a skid buffer
+that drops or duplicates under stall is caught here rather than as a sheared
+frame on a monitor, and the 2×8 case makes TLAST true on every beat, which is
+where a packer that only marks the end of a burst gets it wrong.
+
+The testbench was checked against a deliberately broken packer before it was
+believed: moving the alpha byte one field along makes it fail on beat 1.
+
 ## Four implementations of one algorithm, checked against each other
 
 | written in | checked how | result |
@@ -237,6 +265,67 @@ The third row is the one that matters most. The Python golden model and the C
 kernel are independent implementations written from the same specification, and
 they agree bit for bit on every size and mode tested. That is what makes
 `sw/sobel_ref.py` usable as the reference the board is judged against.
+
+### The packer, so that "SystemVerilog build" means something
+
+There is a second block in project 3 that follows the variant, and the reason it
+does is worth stating plainly.
+
+The camera hierarchy ends with a pixel packer: two 24-bit pixels per beat in,
+two 32-bit pixels out, which is what makes camera frames four bytes a pixel.
+PYNQ ships one — `xilinx.com:hls:pixel_pack_2:1.0`, prebuilt, no source in this
+repo — and projects 0 and 1 use it. So did every project 3 build, at first.
+
+That made the SystemVerilog build of project 3 a design containing a
+hand-written accelerator **and an HLS block in the same datapath**, which does
+not demonstrate what this chapter claims to be demonstrating. So `-tclargs sv`
+and `-tclargs vhdl` now build `SystemVerilog/hdl/pixel_pack.sv` and
+`VHDL/hdl/pixel_pack.vhd` instead, and `-tclargs hls` keeps PYNQ's. Projects 0
+and 1 are deliberately left alone: they exist to bring the camera up, and the
+design the camera was debugged against should not move underneath them.
+
+The behaviour is transcribed from the 32bpp branch of PYNQ's own HLS source
+(`AUP-ZU3/pynq/boards/ip/hls/pixel_pack_2/pixel_pack.cpp`, `case V_32`), which
+is four lines:
+
+```c
+data(23, 0)  = in.data(23, 0);     data(31, 24) = alpha;
+data(55, 32) = in.data(47, 24);    data(63, 56) = alpha;
+out.last = in.last;  out.user = in.user;
+```
+
+One beat in, one beat out. `alpha` is a real register, not a constant — PYNQ's
+driver never writes it, so it sits at zero and camera frames arrive with a
+transparent fourth byte, and the RTL resets it to zero for exactly that reason.
+Matching what the camera has always produced matters more than a tidier default,
+because the filter's colour passthrough mode carries that byte to the screen.
+
+**It does 32 bits per pixel and nothing else.** PYNQ's packer also does 8, 24
+and two flavours of 16; this chapter is 32bpp end to end, so the RTL packs 32bpp
+unconditionally and never decodes the mode register. That puts the whole burden
+of refusing a width on software, and `sw/pixel_packer.py` is where it lands —
+ask it for 24bpp and it raises, because the alternative is 32bpp frames and a
+sheared picture rather than an error.
+
+Three things had to match the IP being replaced, and each of them is a way to
+break the camera without breaking the build:
+
+- **The interface names.** `common/mipi_hier.tcl` connects `pixel_pack/
+  stream_in_48`, `/stream_out_64` and `/s_axi_control` by name, and `ipx` names
+  an inferred interface after the common prefix of the ports it came from —
+  which is why the RTL's ports are `stream_in_48_tdata` and not `s_axis_tdata`.
+- **The register offsets**, `mode` at 0x10 and `alpha` at 0x18, and the 32-byte
+  control aperture the HLS IP declared.
+- **The address block range, 65536.** `assign_bd_address` packs apertures in
+  order, so a different range here moves every address after it — including
+  `axi_iic_0`, whose address the device-tree overlay hardcodes.
+  `common/check_hwh.py` asserts that one, which is the check that would catch it.
+
+PYNQ's `PixelPacker` binds by VLNV, so it does not bind to `aup:rtl:pixel_pack`.
+Packaging hand-written RTL under `xilinx.com:hls:` to borrow the driver would be
+a lie about where the logic came from, so `sw/pixel_packer.py` wraps the IP the
+way `filter_driver.py` wraps the accelerator, and `pixel_packer.attach()` picks
+whichever driver this bitstream needs.
 
 ## Build
 
@@ -588,7 +677,10 @@ part it invalidated completely.
 **The PL pipeline did not care.** Both sensors send RAW10 Bayer over two MIPI
 lanes, so `mipi_csi2_rx_subsyst → axis_subset_converter → demosaic → gamma_lut →
 v_proc_sys → axis_channel_swap → pixel_pack → VDMA` is unchanged, IP for IP and
-name for name. One parameter moved: the OV5647's PLL gives a 218.75 MHz link
+name for name. (Project 3's `sv` and `vhdl` builds later swapped `pixel_pack`
+for a hand-written one — see *The packer, so that "SystemVerilog build" means
+something* — but that was a decision about what the chapter demonstrates, not
+anything the sensor forced.) One parameter moved: the OV5647's PLL gives a 218.75 MHz link
 frequency, so **437.5 Mbps a lane** against the Pcam 5C's 672.
 
 That parameter is worth dwelling on, because it is a good example of a wrong

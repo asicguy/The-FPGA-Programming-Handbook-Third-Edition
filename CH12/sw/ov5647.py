@@ -62,6 +62,7 @@ import os
 import time
 
 import ov5647_regs as regs
+import pixel_packer
 
 # ---------------------------------------------------------------------------
 # Sensor
@@ -1082,6 +1083,15 @@ if _HAVE_PYNQ:
             self.sensor = Ov5647Sensor(self._i2c)
             self.pipeline = VideoPipeline(self.demosaic, self.gamma_lut,
                                           self.v_proc_sys, self.gpio_ip_reset)
+            # NOT resolved here, and nothing in this constructor may touch
+            # `self.pixel_pack`. PYNQ builds an IP's driver on first attribute
+            # access, and PYNQ's own PixelPacker writes register 0x10 in its
+            # __init__ -- so the attribute access alone is a write. At this
+            # point gpio_ip_reset is still asserted and pixel_pack is one of
+            # the IPs it holds; a transaction to an IP in reset never
+            # completes, ZynqMP has no bus timeout on the PL ports, and the
+            # CPU wedges with no console and no panic. See `packer` below.
+            self._packer = None
             self._mode = None
 
             # Before the first write into the 0xA0000000 aperture, and before
@@ -1140,10 +1150,29 @@ if _HAVE_PYNQ:
             self.pipeline.configure(sensor_mode.width, sensor_mode.height,
                                     bayer_phase=bayer_phase, gamma=gamma)
 
-            self.pixel_pack.bits_per_pixel = videomode.bits_per_pixel
+            # First touch of pixel_pack in the whole class, and it happens
+            # here on purpose: release_video_reset() above has already run.
+            self.packer.bits_per_pixel = videomode.bits_per_pixel
             self._vdma.readchannel.mode = videomode
             self._mode = videomode
             return sensor_mode
+
+        @property
+        def packer(self):
+            """The pixel packer's driver, resolved on first use.
+
+            Deliberately lazy. Project 3's sv and vhdl builds carry a
+            hand-written packer that PYNQ has no driver for; every other build
+            carries PYNQ's HLS one, which arrives already driven, and whose
+            constructor writes register 0x10. Resolving either of them costs a
+            bus transaction, so it must not happen until the video reset is
+            off -- which is why this is a property and not a line in __init__.
+            See sw/pixel_packer.py for which driver gets picked and why the
+            test is made against the class rather than the instance.
+            """
+            if self._packer is None:
+                self._packer = pixel_packer.attach(self.pixel_pack)
+            return self._packer
 
         def start(self):
             """VDMA first, then let the sensor onto the link, then tidy up."""

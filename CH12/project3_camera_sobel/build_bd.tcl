@@ -39,6 +39,9 @@ set proj_dir  $script_dir/vivado_$variant
 set bd_name   design_1
 set out_dir   $script_dir/out_$variant
 set ip_repo   $script_dir/ip_repo_$variant
+# A separate repo: ch12_filter_vlnv and ch12_pixel_pack_vlnv each wipe the
+# directory they are handed before packaging into it.
+set pack_repo $script_dir/ip_repo_pack_$variant
 
 ch12_require_dir $ch12_board_repo "AUP-ZU3 board files"
 ch12_require_dir [lindex $ch12_pynq_ip 0] "PYNQ's prebuilt pixel_pack_2 IP"
@@ -47,8 +50,18 @@ set filter [ch12_filter_vlnv $variant $ip_repo]
 set filter_vlnv [lindex $filter 0]
 set filter_repo [lindex $filter 1]
 
+# The camera's pixel packer follows the variant too. This is the only project
+# that does it: 0 and 1 exist to bring the camera up and are left on PYNQ's
+# prebuilt HLS packer, so the design the camera was debugged against does not
+# move underneath them.
+set packer [ch12_pixel_pack_vlnv $variant $pack_repo]
+set packer_vlnv [lindex $packer 0]
+set packer_repo [lindex $packer 1]
+
 create_project $proj_name $proj_dir -part $ch12_part -force
-set_property ip_repo_paths [concat $ch12_pynq_ip [list $filter_repo]] [current_project]
+set_property ip_repo_paths \
+    [concat $ch12_pynq_ip [list $filter_repo] [list $packer_repo]] \
+    [current_project]
 update_ip_catalog -rebuild
 
 set_property board_part_repo_paths [list $ch12_board_repo] [current_project]
@@ -89,7 +102,7 @@ set_property -dict [list \
 # 32-bit AXI4-Lite the slaves want, at no cost worth measuring on a control
 # path. ch12_check_ps_ports below fails the build if this ever drifts again.
 
-ch12_create_mipi_hier / mipi
+ch12_create_mipi_hier / mipi $packer_vlnv
 create_bd_cell -type ip -vlnv $filter_vlnv video_filter_0
 
 # --- external ports ---------------------------------------------------------
@@ -228,4 +241,5 @@ add_files -fileset constrs_1 -norecurse $script_dir/constraints/pins.xdc
 ch12_finish $proj_dir $proj_name $bd_name $out_dir camera_sobel 12
 
 puts " variant: $variant   ($filter_vlnv)"
+puts " packer:  $packer_vlnv"
 exit

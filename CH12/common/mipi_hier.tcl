@@ -38,7 +38,7 @@
 # in the low byte. That is why CH12's filter treats a pixel as B,G,R,A rather
 # than R,G,B,A the way CH11 did -- see HLS/src/video_filter.hpp.
 
-proc ch12_create_mipi_hier {parentCell nameHier} {
+proc ch12_create_mipi_hier {parentCell nameHier {pack_vlnv "xilinx.com:hls:pixel_pack_2:1.0"}} {
 
     if {$parentCell eq "" || $nameHier eq ""} {
         error "ch12_create_mipi_hier: empty argument"
@@ -206,10 +206,17 @@ proc ch12_create_mipi_hier {parentCell nameHier} {
         CONFIG.TUSER_REMAP {tuser[0:0]} \
     ] $axis_channel_swap
 
-    # PYNQ's own HLS IP -- no source in this repo, taken prebuilt from the
-    # AUP-ZU3 checkout. PixelPacker binds to it by VLNV and drives its 32bpp
-    # mode, which is what makes camera frames 4 bytes per pixel.
-    create_bd_cell -type ip -vlnv xilinx.com:hls:pixel_pack_2:1.0 pixel_pack
+    # Two 24-bit pixels per beat in, two 32-bit pixels out -- what makes camera
+    # frames 4 bytes per pixel.
+    #
+    # The default is PYNQ's own prebuilt HLS IP, no source in this repo, taken
+    # from the AUP-ZU3 checkout; PYNQ's PixelPacker binds to it by VLNV.
+    # Projects 0 and 1 take that default. Project 3 passes aup:rtl:pixel_pack
+    # for its sv and vhdl builds instead, so that neither of those ships an HLS
+    # block in a datapath the chapter calls hand-written -- and drives it with
+    # sw/pixel_packer.py, since PYNQ's driver binds by VLNV and will not bind
+    # to ours.
+    create_bd_cell -type ip -vlnv $pack_vlnv pixel_pack
 
     set proc_sys_reset [create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset]
     set_property CONFIG.C_AUX_RESET_HIGH {0} $proc_sys_reset

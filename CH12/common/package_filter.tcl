@@ -1,11 +1,13 @@
 # ---------------------------------------------------------------------------
 # Package the hand-written RTL as an IP, or point at the HLS one
 # ---------------------------------------------------------------------------
-# ch12_filter_vlnv sv|vhdl|hls <ip_repo_dir>
+# ch12_filter_vlnv     sv|vhdl|hls <ip_repo_dir>   -- the accelerator
+# ch12_pixel_pack_vlnv sv|vhdl|hls <ip_repo_dir>   -- the camera's pixel packer
 #
-#   returns the VLNV to instantiate, and for sv/vhdl leaves a packaged IP in
-#   <ip_repo_dir>. Projects 2 and 3 both call it, which is the only reason it
-#   is a proc rather than sixty lines pasted into each of them.
+#   Each returns {vlnv repo}: the VLNV to instantiate, and for sv/vhdl a
+#   packaged IP left in <ip_repo_dir>. Projects 2 and 3 call the first; only
+#   project 3 calls the second, and it must be given a *different* repo
+#   directory, because both wipe the one they are handed before packaging.
 #
 # Two things about packaging RTL are easy to get wrong, and both break PYNQ
 # rather than the hardware:
@@ -154,4 +156,93 @@ proc ch12_filter_vlnv {variant ip_repo} {
     file delete -force $pack_dir
 
     return [list aup:rtl:video_filter:1.0 $ip_repo]
+}
+
+# ---------------------------------------------------------------------------
+# The pixel packer
+# ---------------------------------------------------------------------------
+# Projects 0 and 1 use PYNQ's prebuilt xilinx.com:hls:pixel_pack_2:1.0 and so
+# does project 3's `hls` build. The `sv` and `vhdl` builds get the hand-written
+# one instead -- a build called "SystemVerilog" that still carries an HLS block
+# in its camera datapath does not demonstrate what the chapter claims.
+#
+# Two things have to match the IP being replaced or the hierarchy stops working:
+#
+#   - The interface names. mipi_hier.tcl connects pixel_pack/stream_in_48,
+#     /stream_out_64 and /s_axi_control by name, and ipx names an interface
+#     after the common prefix of the ports it infers it from -- which is why
+#     the RTL's ports are called stream_in_48_tdata and not s_axis_tdata.
+#
+#   - The address block range, 65536, copied from the HLS IP's component.xml.
+#     assign_bd_address packs the apertures in order, so a different range here
+#     moves every address after it -- including axi_iic_0, whose address the
+#     device-tree overlay hardcodes. common/check_hwh.py asserts that one.
+proc ch12_pixel_pack_vlnv {variant ip_repo} {
+    global ch12_root ch12_part ch12_pynq_ip
+
+    if {$variant eq "hls"} {
+        return [list xilinx.com:hls:pixel_pack_2:1.0 [lindex $ch12_pynq_ip 0]]
+    }
+
+    file delete -force $ip_repo
+    file mkdir $ip_repo
+
+    set pack_dir [file join [file dirname $ip_repo] packtmp_pack_$variant]
+    file delete -force $pack_dir
+    create_project ch12_packpack_$variant $pack_dir -part $ch12_part -force
+
+    if {$variant eq "sv"} {
+        add_files -norecurse [list [file join $ch12_root SystemVerilog hdl pixel_pack.sv]]
+        set_property file_type SystemVerilog [get_files pixel_pack.sv]
+    } elseif {$variant eq "vhdl"} {
+        add_files -norecurse [list [file join $ch12_root VHDL hdl pixel_pack.vhd]]
+    } else {
+        error "variant must be sv, vhdl or hls -- got '$variant'"
+    }
+
+    update_compile_order -fileset sources_1
+    set_property top pixel_pack [current_fileset]
+    ipx::package_project -root_dir $ip_repo -vendor aup -library rtl \
+        -taxonomy /UserIP -import_files -force
+    set core [ipx::current_core]
+    set_property name pixel_pack $core
+    set_property version 1.0 $core
+    set_property display_name "24bpp to 32bpp Pixel Packer (RTL $variant)" $core
+    ipx::infer_bus_interfaces xilinx.com:interface:aximm_rtl:1.0 $core
+    ipx::infer_bus_interfaces xilinx.com:interface:axis_rtl:1.0 $core
+    ipx::associate_bus_interfaces -busif s_axi_control  -clock ap_clk $core
+    ipx::associate_bus_interfaces -busif stream_in_48   -clock ap_clk $core
+    ipx::associate_bus_interfaces -busif stream_out_64  -clock ap_clk $core
+
+    # Same auto-created "reg0" trap as the filter: leaving it alongside an
+    # explicit block gives the interface two address blocks and PYNQ then keys
+    # the IP by its interface name instead of its own.
+    set mm [ipx::get_memory_maps s_axi_control -of_objects $core]
+    if {$mm eq ""} {
+        set mm [ipx::add_memory_map s_axi_control $core]
+        set_property slave_memory_map_ref s_axi_control \
+            [ipx::get_bus_interfaces s_axi_control -of_objects $core]
+    }
+    foreach ab [ipx::get_address_blocks -of_objects $mm] {
+        ipx::remove_address_block [get_property name $ab] $mm
+    }
+    set blk [ipx::add_address_block Reg $mm]
+    set_property base_address  0          $blk
+    set_property range         65536      $blk
+    set_property width         32         $blk
+    set_property usage         register   $blk
+    set_property access        read-write $blk
+
+    # The offsets PYNQ's PixelPacker uses, and which sw/pixel_packer.py keeps.
+    ch12_add_reg $blk mode  0x10 "0 24bpp, 1 32bpp, 2 8bpp, 3/4 16bpp (only 1 implemented)"
+    ch12_add_reg $blk alpha 0x18 "byte inserted as the fourth channel"
+
+    set_property core_revision 1 $core
+    ipx::create_xgui_files $core
+    ipx::update_checksums $core
+    ipx::save_core $core
+    close_project
+    file delete -force $pack_dir
+
+    return [list aup:rtl:pixel_pack:1.0 $ip_repo]
 }
