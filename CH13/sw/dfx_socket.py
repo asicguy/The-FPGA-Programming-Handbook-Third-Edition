@@ -126,7 +126,7 @@ class DfxSocket:
         """Channel 2. Reads static logic only -- always safe, always answers."""
         return self.gpio.read(GPIO2_DATA)
 
-    def alive(self, samples=8, interval=0.01):
+    def alive(self, samples=32, interval=0.001):
         """Is the partition clocked and out of reset?
 
         Answered by watching the heartbeat CHANGE, not by reading a level: a
@@ -136,6 +136,13 @@ class DfxSocket:
 
         Touches only the static GPIO, so it is safe to call at any time,
         including while the partition is being reconfigured.
+
+        It returns as soon as it sees a change, so the defaults are a CEILING
+        rather than a cost: with HB_BITS at 20 the heartbeat's half period is
+        2.8 ms, so a change usually appears within three or four reads. The
+        first hardware measurement had this costing 50 ms of a 138 ms swap,
+        because the divider was 24 bits and half a period was 44.7 ms -- the
+        check cannot beat the signal it is watching.
         """
         first = (self.status() >> ST_HEARTBEAT) & 1
         for _ in range(samples):

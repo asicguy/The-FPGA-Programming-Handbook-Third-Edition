@@ -48,9 +48,18 @@
 // no panic and no console. Static logic always answers; the partition may not.
 // See docs/ch13-plan.md §2.2.
 //
-// HB_BITS picks the toggle rate: 24 gives ~45 ms at 187.5 MHz, slow enough
-// that software polling twice sees a change and fast enough not to wait. The
-// testbench overrides it to 8, because 8.4 million cycles is not a simulation.
+// HB_BITS picks the toggle rate, and it is not a free parameter: it sets the
+// FLOOR on how long a swap takes.
+//
+// Liveness is decided by watching the heartbeat CHANGE, so detecting it cannot
+// be faster than half a period. At 24 bits that is 2^23 cycles -- 44.7 ms at
+// 187.5 MHz -- and the first hardware measurement showed exactly that: a 138 ms
+// swap of which 87 ms was the actual PCAP transfer and 50 ms was the driver
+// waiting for a toggle it had been made to wait for.
+//
+// 20 bits gives 2.8 ms, which software polling at millisecond granularity still
+// catches easily, and hands the third of the swap back. The testbench overrides
+// it to 8, because even 2.8 ms is not a simulation.
 `timescale 1ns/10ps
 module socket_ctrl
   #
@@ -59,7 +68,7 @@ module socket_ctrl
    parameter DATA_WIDTH = 32,
    // Set per reconfigurable module. See sw/kernel_ids.py for the registry.
    parameter [31:0] KERNEL_ID = 32'hA5A5_0000,
-   parameter HB_BITS = 24
+   parameter HB_BITS = 20
    )
   (
    input wire                    clk,
