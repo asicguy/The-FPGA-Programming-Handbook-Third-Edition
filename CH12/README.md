@@ -1233,34 +1233,42 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
   `ch12_p2_video_sobel.ipynb` executes top to bottom under `nbconvert`.
 - **Project 3** — live camera through the accelerator, all four modes on the
   screen, built `sv` so that every block in the datapath is hand-written
-  SystemVerilog, packer included. `ch12_p3_camera_sobel.ipynb` executes top to
-  bottom under `nbconvert` from a fresh boot, **zero errors, every cell**, with
-  no AP_DONE timeout anywhere in the run:
+  SystemVerilog, packer included. `ch12_p3_camera_sobel.ipynb` executed top to
+  bottom under `nbconvert` from a fresh boot, zero errors, every cell. Its
+  measurements were then retaken on the dedicated-master architecture, headless
+  and across all three implementations:
 
-  | mode | per frame | rate |
-  |---|---|---|
-  | gray | 5.04 ms | 182.9 Mpixel/s |
-  | sobel | 5.35 ms | 172.3 Mpixel/s |
-  | invert | 5.30 ms | 173.9 Mpixel/s |
-  | colour | 5.24 ms | 175.9 Mpixel/s |
+  | mode | SystemVerilog | VHDL | HLS |
+  |---|---|---|---|
+  | gray | 5.041 ms | 5.040 ms | 4.984 ms |
+  | sobel | 5.042 ms | 5.040 ms | 4.983 ms |
+  | invert | 5.041 ms | 5.040 ms | 4.983 ms |
+  | colour | 5.033 ms | 5.034 ms | 4.976 ms |
 
-  Re-measured after the hand-written packer replaced PYNQ's HLS one, since the
-  camera datapath changed. These are single measurements rather than the median
-  of forty that project 2 reports, which is where the spread comes from — the
-  timing table in project 2, taken the same day on the same accelerator, has all
-  four modes within 0.01 ms of each other. Nothing here suggests the packer
-  costs anything: it is not in the accelerator's path at all, it feeds the VDMA.
+  Median of 300 frames a mode, on a live camera frame, with the `IP_ISR` latch
+  **off** — so this is the hardware, not the workaround. 182.9 Mpixel/s for the
+  RTL implementations and 185.0 for the HLS one. Zero timeouts across all
+  3,600 frames.
+
+  The spread across modes is 0.01 ms and the spread across implementations is
+  0.06. That flatness is the point: the Sobel costs what a passthrough costs,
+  which says the accelerator is DDR-bound rather than compute-bound, and the
+  hand-written packer costs nothing because it is not in the accelerator's path
+  at all — it feeds the VDMA.
 
   All four are within 0.25 ms of the 5.15 ms project 2 measured on a stored
   clip. The accelerator does not care where the pixels came from, which is the
   entire argument for the memory-mapped interface — and the input is zero-copy,
   since `readframe()` returns a VDMA buffer whose physical address goes straight
-  into the source register. Flat cost across all four modes confirms it is
-  DDR-bound: the Sobel costs what a passthrough costs.
+  into the source register.
 
-  Bit-exact against `sobel_ref` on a live camera frame: **0 differing samples,
-  max difference 0**. The camera frame arrives 4 bytes per pixel with a stride
-  of 5120 for 1280 pixels, which is the hand-written packer doing its job.
+  Bit-exact against `sobel_ref` on a real camera frame, **all four modes, all
+  three implementations: 0 differing samples, max difference 0**. The frame is
+  copied into an allocated buffer before it is filtered, so the VDMA cannot
+  write into the source mid-frame — the notebook compares against a live VDMA
+  buffer and says in the cell why a non-zero result there would not mean the
+  filter is wrong. The camera frame arrives 4 bytes per pixel with a stride of
+  5120 for 1280 pixels, which is the hand-written packer doing its job.
 
   The display loop runs at 28.1 fps (OpenCV 27.7, NumPy 5.7), and that ceiling
   is the 32→24 bpp conversion, not the filter — 5 ms of accelerator against

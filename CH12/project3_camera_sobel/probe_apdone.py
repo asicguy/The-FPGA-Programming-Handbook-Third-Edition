@@ -11,11 +11,13 @@
                rather than seen.
   --download   program the PL first, instead of attaching to what is loaded.
 
-This is the tool that placed the fault described under "The AP_DONE timeout,
-and what it actually is" in CH12/README.md, and it is kept because the fault is
-mitigated rather than fixed: the RTL still loses the bit, so the next person to
-touch video_filter_ctrl.sv needs a way to measure whether they made it better
-or worse.
+This is the tool that placed the fault described under "The AP_DONE timeout" in
+CH12/README.md, and it is what decided between the theories: it measures a rate,
+so a change either moves the rate or it does not. The fault is fixed -- the
+accelerator has its own PS master at its own clock, so its control path no
+longer crosses a clock domain -- and this stays for two reasons. It is how the
+fix was demonstrated, and `-tclargs <variant> xclk` rebuilds the faulty
+architecture so the demonstration can be repeated.
 
 It attaches to the design already running -- `download=False` -- so it does not
 reprogram the PL. That matters twice over: it can be run against a board that
@@ -29,7 +31,9 @@ What it prints, and how to read it:
               Should be zero. Anything else is a fault the latch did not cover.
 
   recovered   frames where CTRL lost AP_DONE and the sticky IP_ISR copy saved
-              them. This is the race, counted. About 1 in 1000 on this board.
+              them. This is the fault, counted. Zero on the current design;
+              about 1 in 1000 on an `xclk` build, which is the point of keeping
+              `xclk` buildable.
 
   slow        frames over 20 ms, against a nominal 5. Kept because project 2
               once showed two frames taking 3.4 s while still coming out

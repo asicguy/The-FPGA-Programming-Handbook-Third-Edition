@@ -244,6 +244,12 @@ class VideoFilter:
         frame finished. ISR is toggle-on-write, so once latched it stays until
         it is explicitly cleared -- which makes it the one place a lost
         completion leaves a trace. It only latches when IP_IER bit 0 is on.
+
+        On this board the reads were lost in an AXI4-Lite clock crossing rather
+        than to a race inside the accelerator, and project 3 fixes that by
+        giving the accelerator its own PS master at its own clock -- see
+        CH12/README.md. The latch stays on by default because it costs nothing
+        and it covers a crossing that cannot be avoided.
         """
         self._ip.write(REG_IER, 1)
         self._latch_armed = True
