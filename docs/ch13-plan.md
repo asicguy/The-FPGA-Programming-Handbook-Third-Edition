@@ -1,17 +1,33 @@
 # CH13 — one socket, many accelerators, no reboot
 
-**Status: in progress.** Approved and being built under `CH13/`. The
-feasibility spike behind the plan is described in §3, including the parts that
-failed.
+**Status: built and demonstrated on hardware.** Everything under `CH13/`.
+See `CH13/README.md` for the results and the reasoning; this plan is kept as the
+record of what was intended, including where the intent turned out to be wrong.
 
-Built so far: the socket's control block and its hostile testbench with a
-working negative control; four reconfigurable modules against a golden model,
-one testbench for all of them; out-of-context sizing for the pblock; the static
-design with the Block Design Container, the AXI shutdown managers and the
-status GPIO; the DFX flow configured with one PR configuration per RM and child
-runs parented to the static implementation; and the swap driver. Not yet done:
-the implementation run, `pr_verify` on real checkpoints, and everything on the
-board.
+Done: the socket contract and its control block, with a hostile testbench and a
+working negative control; four RMs against a golden model, one testbench for all
+of them; out-of-context sizing; the static design with the Block Design
+Container, the AXI shutdown managers and the status GPIO; the DFX flow with one
+PR configuration per RM and child runs parented to the static implementation;
+`pr_verify` passing on every configuration; the swap driver; and the swap
+demonstrated on the board -- five swaps, no reboot, no kernel panic, every mode
+of every kernel bit-exact, median 138 ms.
+
+Where this plan was wrong, and the corrections are in the README:
+
+- §2.2 said the status GPIO exists so software can decline rather than hang.
+  Correct, and it worked on the first run -- but it did not say that the
+  heartbeat's RATE sets a floor on how long a swap takes. At 24 bits the
+  liveness check cost 50 ms of a 138 ms swap.
+- §4's swap sequence is right as written, and the shutdown managers did prevent
+  the spike's panic. Nothing in it needed changing.
+- §6.1's 399 ms was provisional and is superseded: ~138 ms end to end, ~87 ms of
+  it the PCAP transfer.
+
+Open: the heartbeat reduction (24 -> 20 bits) rebuilds clean with identical
+timing and `pr_verify`, but the board went down during its re-measurement before
+any swap completed, and there is no diagnosis because no serial console was
+running -- see §7, which asks for exactly that and was not followed.
 
 ## 1. What the chapter is for
 
