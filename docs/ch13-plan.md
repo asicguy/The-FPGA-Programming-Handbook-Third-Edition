@@ -1,7 +1,17 @@
 # CH13 — one socket, many accelerators, no reboot
 
-**Status: proposed.** Not approved, not started. The feasibility spike behind it
-is described in §3, including the parts that failed.
+**Status: in progress.** Approved and being built under `CH13/`. The
+feasibility spike behind the plan is described in §3, including the parts that
+failed.
+
+Built so far: the socket's control block and its hostile testbench with a
+working negative control; four reconfigurable modules against a golden model,
+one testbench for all of them; out-of-context sizing for the pblock; the static
+design with the Block Design Container, the AXI shutdown managers and the
+status GPIO; the DFX flow configured with one PR configuration per RM and child
+runs parented to the static implementation; and the swap driver. Not yet done:
+the implementation run, `pr_verify` on real checkpoints, and everything on the
+board.
 
 ## 1. What the chapter is for
 
@@ -239,12 +249,22 @@ Learned expensively, and binding for this chapter:
 - **The camera cannot move into the RP** — its pins are physical. If a reader
   expects "swap the whole pipeline", the chapter must set that expectation
   early.
-- **Timing under a pblock.** Project 3 currently closes at +0.386 ns; confining
-  the accelerator to a region may cost more than that.
-- **The AP_DONE fault rides along.** It is mitigated in software, not fixed;
-  the mechanism is still unidentified after two refuted theories. The socket
-  makes `video_filter_ctrl` permanent, so this should be closed with an ILA
-  before it is baked in — see CH12's README.
+- **Timing under a pblock.** Project 3 closes at +0.122 ns on the dedicated-
+  master architecture, which is tighter than the +0.386 this plan was written
+  against; confining the accelerator to a clock region may cost more than that
+  remaining margin. Out of context each RM has 0.30–0.32 ns of slack at 5 ns,
+  so the headroom exists — but out of context is not inside a pblock.
+- ~~**The AP_DONE fault rides along.**~~ **Closed.** It was the AXI4-Lite clock
+  crossing, and the socket's control path now comes off a dedicated PS master
+  at the partition's own clock, so no RM can reintroduce it. See §2.3 and
+  CH12/README.md. The `IP_ISR` latch stays on anyway, because it costs nothing
+  and a swappable socket has more ways to lose a completion than a fixed one.
+- **The partition is much larger than any RM.** A whole clock region holds
+  about 9600 LUTs and the largest RM is 1831. `RESET_AFTER_RECONFIG` requires
+  clock-region alignment, so that is the minimum, but the partial's size — and
+  therefore the swap time — is set by the partition rather than by its
+  contents. Measure it and say so rather than quoting the reconfiguration time
+  as if it were a property of the filter.
 - Partial reconfiguration is per-region; two accelerators would need two
   regions, and the spike proves one.
 
