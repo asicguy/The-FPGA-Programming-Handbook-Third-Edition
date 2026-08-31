@@ -39,6 +39,8 @@ if [ -z "$WHAT" ]; then echo "nothing selected -- try --socket, --rm <name> or -
 # logic, so there is one definition of how each target is run.
 if [ "$WHAT" = all ]; then
     rc=0
+    echo "######## kernel ids"
+    if python3 ../common/check_ids.py | tail -1; then :; else echo "  FAILED"; rc=1; fi
     for rm in passthrough sobel blur threshold; do
         echo "######## RM $rm"
         "$0" --rm "$rm" >/dev/null 2>&1 || { echo "  FAILED"; rc=1; continue; }
