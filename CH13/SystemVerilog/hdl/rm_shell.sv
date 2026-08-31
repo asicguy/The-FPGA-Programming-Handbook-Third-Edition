@@ -173,8 +173,21 @@ module rm_shell
   wire [63:0] src_addr, dst_addr;
   wire [31:0] img_width, img_height, mode;
 
-  // total pixels = words on both masters
-  wire [31:0] total_words = img_width * img_height;
+  // total pixels = words on both masters.
+  //
+  // REGISTERED, not a combinational product of the argument registers, and the
+  // difference is 0.375 ns of timing slack. Left combinational, the path runs
+  //   img_height -> DSP multiply -> the read engine's burst arithmetic ->
+  //   the input FIFO's empty flag -> the core's pipeline enable -> its counters
+  // which is fifteen levels of logic and does not close at 5.333 ns inside a
+  // pblock. Registering the product costs one cycle of latency that nothing can
+  // observe -- software writes the dimensions long before it writes ap_start --
+  // and breaks the chain at its source.
+  logic [31:0] total_words;
+  always_ff @(posedge ap_clk) begin
+    if (!ap_rst_n) total_words <= 32'd0;
+    else           total_words <= img_width * img_height;
+  end
 
   // ------------------------------------------------------------------
   // Control

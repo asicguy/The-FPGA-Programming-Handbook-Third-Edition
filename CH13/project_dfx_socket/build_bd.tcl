@@ -209,20 +209,46 @@ connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] \
 
 connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn] [get_bd_pins mipi/lite_aresetn]
 
-# The partition's reset is the accelerator reset AND a bit software controls.
-# Software must be able to HOLD the partition in reset across a swap:
-# RESET_AFTER_RECONFIG releases it automatically, but the sequence needs the
-# partition quiet from before the partial lands until after it is checked.
-ch13_add_and2 rm_rst_and
+# The partition gets its OWN reset controller, and that is not tidiness.
+#
+# Software must be able to hold the partition in reset across a swap:
+# RESET_AFTER_RECONFIG releases it on its own, but the sequence needs the
+# partition quiet from before the partial lands until after it is checked. The
+# obvious way -- AND the GPIO's bit with rst_accel and call it ap_rst_n -- is
+# wrong twice over:
+#
+#   * it crosses pl_clk0 to pl_clk2 with no synchroniser, on a net that fans
+#     out to every flip-flop in the partition. That was 1369 failing endpoints
+#     against a 0.336 ns requirement.
+#   * holding the partition in reset that way would also have to leave
+#     rst_accel alone, or the shutdown managers isolating the partition would
+#     themselves be reset -- and they are the only thing keeping the rest of the
+#     system safe while the partition is gone.
+#
+# proc_sys_reset takes the software bit on aux_reset_in and produces a reset
+# SYNCHRONOUS to pl_clk2, asserted asynchronously and released synchronously,
+# which is what a reset crossing domains is supposed to look like. rst_accel
+# keeps running the shutdown managers and the SmartConnects throughout.
 ch13_add_dfx_gpio dfx_ctrl
 ch13_add_slice slice_shutdown 2 0 0
 ch13_add_slice slice_rm_resetn 2 1 1
 connect_bd_net [get_bd_pins dfx_ctrl/gpio_io_o] [get_bd_pins slice_shutdown/Din]
 connect_bd_net [get_bd_pins dfx_ctrl/gpio_io_o] [get_bd_pins slice_rm_resetn/Din]
-connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins rm_rst_and/Op1]
-connect_bd_net [get_bd_pins slice_rm_resetn/Dout]         [get_bd_pins rm_rst_and/Op2]
-connect_bd_net [get_bd_pins rm_rst_and/Res]               [get_bd_pins socket/ap_rst_n]
-connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]    [get_bd_pins socket/ap_clk]
+
+create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 rst_socket
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]  [get_bd_pins rst_socket/slowest_sync_clk]
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] [get_bd_pins rst_socket/ext_reset_in]
+connect_bd_net [get_bd_pins slice_rm_resetn/Dout]       [get_bd_pins rst_socket/aux_reset_in]
+connect_bd_net [get_bd_pins rst_socket/peripheral_aresetn] [get_bd_pins socket/ap_rst_n]
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]  [get_bd_pins socket/ap_clk]
+
+# request_shutdown goes the other way across the same boundary. One bit, but it
+# gates three shutdown managers, so it gets a real synchroniser rather than a
+# hopeful one.
+ch13_add_cdc cdc_shutdown 1 10000 5333
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins cdc_shutdown/src_clk]
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] [get_bd_pins cdc_shutdown/dest_clk]
+connect_bd_net [get_bd_pins slice_shutdown/Dout]       [get_bd_pins cdc_shutdown/src_in]
 
 # --- shutdown managers on every interface crossing the boundary -------------
 ch13_add_shutdown sdm_ctrl  false AXI4LITE 32 32
@@ -231,16 +257,18 @@ ch13_add_shutdown sdm_gmem1 true  AXI4MM   64 32
 foreach sdm {sdm_ctrl sdm_gmem0 sdm_gmem1} {
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]    [get_bd_pins $sdm/clk]
     connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins $sdm/resetn]
-    connect_bd_net [get_bd_pins slice_shutdown/Dout]          [get_bd_pins $sdm/request_shutdown]
+    connect_bd_net [get_bd_pins cdc_shutdown/dest_out]        [get_bd_pins $sdm/request_shutdown]
 }
 
 # --- interrupts -------------------------------------------------------------
 # The socket's interrupt is gated by the partition's reset. While the partition
 # is held in reset its interrupt line means nothing, and an ungated one during
 # a swap is a spurious interrupt into an enabled controller.
+# Gated by the SYNCHRONISED reset, in the partition's own clock domain, rather
+# than by the raw GPIO bit from the other domain.
 ch13_add_and2 irq_gate
-connect_bd_net [get_bd_pins socket/interrupt]      [get_bd_pins irq_gate/Op1]
-connect_bd_net [get_bd_pins slice_rm_resetn/Dout]  [get_bd_pins irq_gate/Op2]
+connect_bd_net [get_bd_pins socket/interrupt]              [get_bd_pins irq_gate/Op1]
+connect_bd_net [get_bd_pins rst_socket/peripheral_aresetn] [get_bd_pins irq_gate/Op2]
 
 connect_bd_net [get_bd_pins mipi/iic2intc_irpt] [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq1]
 
@@ -275,7 +303,14 @@ connect_bd_net [get_bd_pins socket/heartbeat]    [get_bd_pins status_concat/In0]
 connect_bd_net [get_bd_pins sdm_ctrl/in_shutdown]  [get_bd_pins status_concat/In1]
 connect_bd_net [get_bd_pins sdm_gmem0/in_shutdown] [get_bd_pins status_concat/In2]
 connect_bd_net [get_bd_pins sdm_gmem1/in_shutdown] [get_bd_pins status_concat/In3]
-connect_bd_net [get_bd_pins status_concat/dout]  [get_bd_pins dfx_ctrl/gpio2_io_i]
+# And back the other way. All four status bits originate at pl_clk2 and are
+# read by a GPIO at pl_clk0, so they cross too. The heartbeat especially: its
+# whole job is to be sampled from the other domain.
+ch13_add_cdc cdc_status 4 5333 10000
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] [get_bd_pins cdc_status/src_clk]
+connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins cdc_status/dest_clk]
+connect_bd_net [get_bd_pins status_concat/dout]        [get_bd_pins cdc_status/src_in]
+connect_bd_net [get_bd_pins cdc_status/dest_out]       [get_bd_pins dfx_ctrl/gpio2_io_i]
 
 # --- AXI4-Lite control path -------------------------------------------------
 # Every port of this interconnect runs at 100 MHz, and the socket is NOT on it.

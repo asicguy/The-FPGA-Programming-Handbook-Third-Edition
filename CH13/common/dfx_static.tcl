@@ -83,3 +83,36 @@ proc ch13_add_slice {name width from to} {
         [get_bd_cells $name]
     return $name
 }
+
+# A clock-domain crossing, done properly.
+#
+# The status GPIO lives on the 100 MHz AXI4-Lite interconnect, so everything it
+# drives leaves the pl_clk0 domain, and everything it reads arrives from
+# pl_clk2. Wiring those straight across is what the first version of this
+# design did, and it fails timing catastrophically rather than subtly:
+#
+#   clk_pl_0 -> clk_pl_2   WNS -1.324   1369 of 1369 endpoints failing
+#   Requirement: 0.336ns
+#
+# 0.336 ns because the two clocks are NOT asynchronous -- they are integer
+# divisions of the same 1500 MHz PLL, so Vivado times them SYNCHRONOUSLY and
+# the tightest edge relationship between a 10 ns clock and a 5.333 ns one is
+# what the logic gets. No amount of placement effort closes that.
+#
+# The same PLL relationship is what made CH12's AP_DONE fault so confusing: the
+# crossing looked asynchronous and was constrained as if it were, when the
+# clocks were related all along.
+proc ch13_add_cdc {name width src_period_ps dest_period_ps} {
+    create_bd_cell -type ip -vlnv xilinx.com:ip:xpm_cdc_gen:1.0 $name
+    set_property -dict [list \
+        CONFIG.CDC_TYPE       {xpm_cdc_array_single} \
+        CONFIG.WIDTH          $width \
+        CONFIG.DEST_SYNC_FF   {4} \
+        CONFIG.SRC_INPUT_REG  {true} \
+        CONFIG.INIT_SYNC_FF   {false} \
+        CONFIG.SIM_ASSERT_CHK {false} \
+        CONFIG.SRC_CLK_PERIOD  $src_period_ps \
+        CONFIG.DEST_CLK_PERIOD $dest_period_ps \
+    ] [get_bd_cells $name]
+    return $name
+}

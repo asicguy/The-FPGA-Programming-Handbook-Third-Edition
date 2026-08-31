@@ -180,8 +180,13 @@ set verify_fail 0
 foreach r $child_runs {
     set child_dcp $proj_dir/$proj_name.runs/$r/${bd_name}_wrapper_routed.dcp
     if {![file exists $child_dcp]} { puts " pr_verify: $r has no routed dcp"; incr verify_fail; continue }
+    # -initial/-additional, not a Tcl list as one positional argument. Passing
+    # {dcp1 dcp2} is rejected with
+    #   ERROR [Vivado 12-3499] Incorrect command format
+    # even though the comparison itself has already run by then, which makes
+    # the failure look like a verification failure rather than a typo.
     if {[catch {pr_verify -full_check -file $out_dir/pr_verify_$r.log \
-                    [list $parent_dcp $child_dcp]} msg]} {
+                    -initial $parent_dcp -additional $child_dcp} msg]} {
         puts " pr_verify FAILED for $r: $msg"
         incr verify_fail
     } else {
@@ -193,23 +198,42 @@ if {$verify_fail} { error "pr_verify failed for $verify_fail configuration(s)" }
 # ---------------------------------------------------------------------------
 # 6. Collect the bitstreams
 # ---------------------------------------------------------------------------
-proc ch13_collect {runs_dir out_dir bd_name label} {
-    set n 0
-    foreach f [glob -nocomplain [file join $runs_dir *.bit]] {
-        set base [file tail $f]
-        file copy -force $f [file join $out_dir $base]
-        puts [format "   %-52s %6.0f KB" $base [expr {[file size $f] / 1024.0}]]
-        incr n
+# Collect with names that say what each file IS.
+#
+# Every run writes a FULL bitstream as well as a partial, all called
+# design_1_wrapper.bit, so copying them by their own names means four files
+# overwriting each other and whichever ran last winning. The full bitstream
+# that belongs in out/ is impl_1's -- the one whose socket holds the boot RM.
+proc ch13_collect_partial {runs_dir out_dir name} {
+    set hits [glob -nocomplain [file join $runs_dir *partial.bit]]
+    if {[llength $hits] != 1} {
+        error "expected one partial in $runs_dir, found: $hits"
     }
-    return $n
+    set dst [file join $out_dir socket_${name}_partial.bit]
+    file copy -force [lindex $hits 0] $dst
+    return [file size $dst]
 }
 
 puts ""
 puts "=== bitstreams ==="
-ch13_collect $proj_dir/$proj_name.runs/impl_1 $out_dir $bd_name full
+set full_src $proj_dir/$proj_name.runs/impl_1/${bd_name}_wrapper.bit
+if {![file exists $full_src]} { error "impl_1 produced no full bitstream" }
+file copy -force $full_src $out_dir/dfx_socket.bit
+puts [format "   %-34s %8.0f KB   full (static + %s)" \
+        dfx_socket.bit [expr {[file size $full_src] / 1024.0}] $boot_rm]
+
+# The boot RM's partial comes from impl_1; every other RM's from its child run.
+set sz [ch13_collect_partial $proj_dir/$proj_name.runs/impl_1 $out_dir $boot_rm]
+puts [format "   %-34s %8.0f KB   partial" socket_${boot_rm}_partial.bit [expr {$sz/1024.0}]]
 foreach r $child_runs {
-    ch13_collect $proj_dir/$proj_name.runs/$r $out_dir $bd_name $r
+    set name [string range $r 6 end]
+    set sz [ch13_collect_partial $proj_dir/$proj_name.runs/$r $out_dir $name]
+    puts [format "   %-34s %8.0f KB   partial" socket_${name}_partial.bit [expr {$sz/1024.0}]]
 }
+
+# Every partial is the same size, and that is the point rather than a
+# coincidence: a partial covers the whole PARTITION, so its size is set by how
+# the socket was sized and not by what is in it. See docs/ch13-plan.md 6.1.
 
 # The .hwh is what PYNQ reads to build the register maps.
 set hwh [glob -nocomplain $proj_dir/$proj_name.gen/sources_1/bd/$bd_name/hw_handoff/$bd_name.hwh]
