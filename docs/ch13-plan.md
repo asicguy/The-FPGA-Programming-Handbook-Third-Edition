@@ -73,6 +73,37 @@ With the GPIO, software asks *"is the partition clocked and out of reset?"*
 before it asks the partition anything, and **declines** instead of hanging.
 Every access path in `sw/` must go through that check.
 
+### 2.3 The socket's control path gets its own PS master
+
+**Settled, by measurement in CH12.** `s_axi_control` is driven from a dedicated
+PS master — `HPM1_FPD` — clocked from the same PL clock the partition runs on.
+It does not share the static interconnect with the camera, and it does not
+cross a clock domain.
+
+CH12 spent a long hunt on an intermittent lost completion, about one frame in a
+thousand, and the answer was the AXI4-Lite clock crossing between the 100 MHz
+control path and the 187.5 MHz accelerator. A CTRL read carrying `AP_DONE` was
+acknowledged at the accelerator and never delivered to the PS; because
+`AP_DONE` is clear-on-read, the acknowledgement destroyed the completion rather
+than delaying it. Giving the accelerator its own master at its own clock took
+it to 0 in 8000 at full speed, on all three implementations including the
+Vitis HLS one. The full account and the controlled experiment are in
+`CH12/README.md`.
+
+Three consequences for this chapter:
+
+- **The partition's clock is part of the socket contract**, not an RM's choice.
+  Every RM runs at the static region's accelerator clock, so no RM can
+  reintroduce the crossing.
+- **The decoupler sits on the partition side of that master**, so the path
+  being decoupled is still crossing-free when it is connected.
+- **Keep the `IP_ISR` latch on** in `sw/`. It costs nothing, and a
+  reconfigurable socket has more ways to lose a completion than a fixed one —
+  a swap during a frame among them.
+
+This is the one piece of CH12's architecture that CH13 must not simplify away
+in the name of a tidier block design. It was expensive to learn.
+
 ## 3. What the spike proved, and what it broke
 
 A throwaway spike ran before this plan: a static design, two reconfigurable
