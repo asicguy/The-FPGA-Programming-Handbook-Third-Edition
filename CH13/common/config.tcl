@@ -59,6 +59,23 @@ set ch13_socket_mhz 200
 set ch13_socket_base 0xB0000000
 set ch13_socket_range 64K
 
+# The clock region the reconfigurable partition occupies.
+#
+# One WHOLE clock region, because RESET_AFTER_RECONFIG requires the pblock to
+# be clock-region aligned, and RESET_AFTER_RECONFIG is what puts the new RM in
+# a known state instead of whatever the fabric happened to power up as.
+#
+# It is also far more room than any RM needs -- the largest is 1831 LUTs and
+# the smallest region here holds about 9600 -- and that is worth being honest
+# about rather than hiding, because the partial bitstream's size is set by the
+# PARTITION, not by what is in it. A partition sized for convenience makes
+# every swap proportionally slower. See docs/ch13-plan.md 6.1.
+#
+# X1Y2 keeps the partition away from the PS at the bottom of the die and out of
+# the larger X0Y* columns, which the camera pipeline and the interconnects
+# want.
+set ch13_pblock_region {CLOCKREGION_X1Y2:CLOCKREGION_X1Y2}
+
 # The DFX status and control GPIO, in the STATIC region. Software reads this
 # BEFORE it touches the socket -- see docs/ch13-plan.md 2.2.
 set ch13_dfx_ctrl_base 0x80170000
