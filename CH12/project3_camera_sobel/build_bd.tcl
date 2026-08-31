@@ -34,47 +34,58 @@ if {[lsearch -exact {sv vhdl hls} $variant] < 0} {
     error "variant must be sv, vhdl or hls -- got '$variant'"
 }
 
-# Optional: -tclargs <variant> ila puts a System ILA on the accelerator's
-# AXI4-Lite control port and its write master.
+# Options after the variant, in any order:
 #
-# This exists for the AP_DONE fault. About one frame in a thousand the
-# accelerator finishes -- the destination's last word is written, and IP_ISR
-# latches ap_done -- and yet AP_DONE never appears in CTRL across 400,000
-# polls. Five theories have been measured away, and software has run out of
-# visibility: the completion path between the write engine and the CTRL bit is
-# not memory-mapped, so no address shows what happens on it.
+#   ila       System ILA on the accelerator's control port and write master
+#   xclk      the OLD control path: AXI4-Lite crossing 100 -> 187.5 MHz
+#   oneclk    everything on pl_clk0, no crossing and no dedicated master
 #
-# The trigger to set is a CTRL read returning exactly 0x4 -- ap_idle set,
-# ap_done clear, ap_start clear. In normal operation that combination is never
-# read: the poll sees 0x6 (idle|done) and stops, and the first poll of a new
-# frame sees 0x5 (idle|start). 0x4 is the fault and nothing else.
+# The DEFAULT is a dedicated PS master (HPM1_FPD) clocked with the
+# accelerator, so the control path never crosses a clock domain.
+#
+# That default exists because the crossing loses read data. About one frame in
+# a thousand, a CTRL read carrying AP_DONE was acknowledged at the accelerator
+# -- clearing the bit, since AP_DONE is clear-on-read -- and never delivered to
+# the PS. Software then waited forever on a frame that had finished, and the
+# frame it failed to arm next is the one that appeared to time out.
+#
+# Measured, all with the software workaround disabled:
+#
+#   crossing inside axi_interconnect          ~0.5% of frames
+#   crossing via explicit axi_clock_converter ~0.5%   (ACLK_ASYNC=1, constrained,
+#                                                      timing met -- and still lost)
+#   no crossing, accelerator at 100 MHz       0 in 8000   (oneclk)
+#   no crossing, accelerator at 187.5 MHz     0 in 8000   (this default)
+#
+# The last two together are what make it the crossing rather than the clock
+# rate: oneclk changed both at once, this changes only the crossing.
+#
+# `xclk` rebuilds the faulty architecture, because a fault you cannot
+# reproduce is a story rather than a result.
 set want_ila 0
-if {[llength $argv] > 1 && [lindex $argv 1] eq "ila"} { set want_ila 1 }
-
-# -tclargs <variant> oneclk runs the accelerator on pl_clk0, the SAME NET as
-# the AXI4-Lite control path, so there is no clock crossing anywhere on that
-# path -- not a converter, not an interconnect port, nothing.
-#
-# This is a diagnostic for the AP_DONE fault. An explicit axi_clock_converter
-# with ACLK_ASYNC=1 and both frequencies correctly propagated did NOT change
-# the fault rate, so a correct crossing is not the fix; this removes the
-# crossing altogether to decide whether clocks are involved at all. It costs
-# throughput: the accelerator drops from 187.5 MHz to 100, so a frame goes
-# from ~5.15 ms to ~9.6 ms.
 set one_clock 0
-if {[llength $argv] > 1 && [lindex $argv 1] eq "oneclk"} { set one_clock 1 }
+set fast_ctrl 1
+foreach a [lrange $argv 1 end] {
+    switch -- $a {
+        ila    { set want_ila 1 }
+        oneclk { set one_clock 1 ; set fast_ctrl 0 }
+        xclk   { set fast_ctrl 0 }
+        default { error "unknown option '$a' -- expected ila, xclk or oneclk" }
+    }
+}
 set accel_clk [expr {$one_clock ? "pl_clk0" : "pl_clk2"}]
 
-set proj_name camera_sobel_$variant
-if {$want_ila}   { set proj_name camera_sobel_${variant}_ila }
-if {$one_clock}  { set proj_name camera_sobel_${variant}_oneclk }
-set proj_dir  $script_dir/vivado_$variant
-if {$want_ila}  { set proj_dir $script_dir/vivado_${variant}_ila }
-if {$one_clock} { set proj_dir $script_dir/vivado_${variant}_oneclk }
+# One suffix, built once, so the project, the run directory and the artifacts
+# can never disagree about which configuration they are.
+set tag ""
+if {$want_ila}                  { append tag "_ila" }
+if {$one_clock}                 { append tag "_oneclk" }
+if {!$fast_ctrl && !$one_clock} { append tag "_xclk" }
+
+set proj_name camera_sobel_${variant}${tag}
+set proj_dir  $script_dir/vivado_${variant}${tag}
 set bd_name   design_1
-set out_dir   $script_dir/out_$variant
-if {$want_ila}  { set out_dir $script_dir/out_${variant}_ila }
-if {$one_clock} { set out_dir $script_dir/out_${variant}_oneclk }
+set out_dir   $script_dir/out_${variant}${tag}
 set ip_repo   $script_dir/ip_repo_$variant
 # A separate repo: ch12_filter_vlnv and ch12_pixel_pack_vlnv each wipe the
 # directory they are handed before packaging into it.
@@ -115,6 +126,16 @@ set_property -dict [list \
     CONFIG.PSU__USE__M_AXI_GP0 {1} \
     CONFIG.PSU__MAXIGP0__DATA_WIDTH {128} \
 ] [get_bd_cells zynq_ultra_ps_e_0]
+
+# A dedicated master for the accelerator's control path, clocked with the
+# accelerator itself. 128 bits because that is what the board boots with --
+# see the paragraph below, which applies to this port exactly as much.
+if {$fast_ctrl} {
+    set_property -dict [list \
+        CONFIG.PSU__USE__M_AXI_GP1 {1} \
+        CONFIG.PSU__MAXIGP1__DATA_WIDTH {128} \
+    ] [get_bd_cells zynq_ultra_ps_e_0]
+}
 
 # 128, and not the 32 the slaves behind it actually want. This is the single
 # most expensive line in the chapter to get wrong, so it is worth the paragraph.
@@ -241,14 +262,32 @@ connect_bd_net [get_bd_pins axi_intc_0/irq]  [get_bd_pins zynq_ultra_ps_e_0/pl_p
 # and it cost five wrong theories before an ILA on both sides of one
 # interconnect showed it.
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:2.1 lite_periph
-set_property -dict [list CONFIG.NUM_MI {5} CONFIG.NUM_SI {1}] [get_bd_cells lite_periph]
+# One fewer master when the accelerator has its own path: an unconnected
+# master port fails validation rather than being ignored.
+set lite_mi [expr {$fast_ctrl ? 4 : 5}]
+set_property -dict [list CONFIG.NUM_MI $lite_mi CONFIG.NUM_SI {1}] [get_bd_cells lite_periph]
+set intc_port [expr {$fast_ctrl ? "M03_AXI" : "M04_AXI"}]
 connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM0_LPD] [get_bd_intf_pins lite_periph/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M00_AXI] [get_bd_intf_pins mipi/S_AXI_LITE]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M01_AXI] [get_bd_intf_pins mipi/csirxss_s_axi]
 connect_bd_intf_net [get_bd_intf_pins lite_periph/M02_AXI] [get_bd_intf_pins mipi/S_AXI]
 # M03 -> clock converter -> the accelerator. With one_clock there is nothing
 # to convert, so the converter is left out entirely rather than degenerated.
-if {$one_clock} {
+if {$fast_ctrl} {
+    # Straight off the dedicated master, single clock, width-converted only.
+    create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect sc_ctrl
+    set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1} CONFIG.NUM_CLKS {1}] \
+        [get_bd_cells sc_ctrl]
+    connect_bd_intf_net [get_bd_intf_pins zynq_ultra_ps_e_0/M_AXI_HPM1_FPD] \
+        [get_bd_intf_pins sc_ctrl/S00_AXI]
+    connect_bd_intf_net [get_bd_intf_pins sc_ctrl/M00_AXI] \
+        [get_bd_intf_pins video_filter_0/s_axi_control]
+    connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2] \
+        [get_bd_pins sc_ctrl/aclk] \
+        [get_bd_pins zynq_ultra_ps_e_0/maxihpm1_fpd_aclk]
+    connect_bd_net [get_bd_pins rst_accel/peripheral_aresetn] [get_bd_pins sc_ctrl/aresetn]
+    # lite_periph no longer serves the accelerator: M03 becomes the intc.
+} elseif {$one_clock} {
     connect_bd_intf_net [get_bd_intf_pins lite_periph/M03_AXI] \
         [get_bd_intf_pins video_filter_0/s_axi_control]
 } else {
@@ -256,18 +295,24 @@ if {$one_clock} {
     connect_bd_intf_net [get_bd_intf_pins lite_periph/M03_AXI] [get_bd_intf_pins ctrl_cdc/S_AXI]
     connect_bd_intf_net [get_bd_intf_pins ctrl_cdc/M_AXI] [get_bd_intf_pins video_filter_0/s_axi_control]
 }
-connect_bd_intf_net [get_bd_intf_pins lite_periph/M04_AXI] [get_bd_intf_pins axi_intc_0/s_axi]
+connect_bd_intf_net [get_bd_intf_pins lite_periph/$intc_port] [get_bd_intf_pins axi_intc_0/s_axi]
 connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins axi_intc_0/s_axi_aclk]
 connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn] [get_bd_pins axi_intc_0/s_axi_aresetn]
-foreach p {ACLK S00_ACLK M00_ACLK M01_ACLK M02_ACLK M03_ACLK M04_ACLK} {
+set lite_clk_pins {ACLK S00_ACLK M00_ACLK M01_ACLK M02_ACLK M03_ACLK}
+if {!$fast_ctrl} { lappend lite_clk_pins M04_ACLK }
+foreach p $lite_clk_pins {
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins lite_periph/$p]
 }
-foreach p {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN M02_ARESETN M03_ARESETN M04_ARESETN} {
+set lite_rst_pins {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN M02_ARESETN M03_ARESETN}
+if {!$fast_ctrl} { lappend lite_rst_pins M04_ARESETN }
+foreach p $lite_rst_pins {
     connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn] [get_bd_pins lite_periph/$p]
 }
 
 # The converter straddles the two domains: 100 MHz in, 187.5 MHz out.
-if {!$one_clock} {
+# ctrl_cdc exists only on the default path: oneclk needs no converter, and
+# fastctrl replaced it with a dedicated master.
+if {!$one_clock && !$fast_ctrl} {
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]    [get_bd_pins ctrl_cdc/s_axi_aclk]
     connect_bd_net [get_bd_pins rst_lite/peripheral_aresetn]  [get_bd_pins ctrl_cdc/s_axi_aresetn]
     connect_bd_net [get_bd_pins zynq_ultra_ps_e_0/pl_clk2]    [get_bd_pins ctrl_cdc/m_axi_aclk]

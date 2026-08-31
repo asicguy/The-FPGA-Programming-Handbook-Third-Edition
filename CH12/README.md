@@ -459,14 +459,20 @@ the HP slave ports they land on are clocked from the same PL clock.
 
 | | SystemVerilog | VHDL | HLS |
 |---|---|---|---|
-| WNS | +0.386 ns | +0.439 ns | +0.482 ns |
-| Failing setup endpoints | **0** / 75306 | **0** / 75312 | **0** / 79134 |
-| WHS | +0.010 ns | +0.010 ns | +0.010 ns |
+| WNS | +0.122 ns | +0.291 ns | +0.364 ns |
+| Failing setup endpoints | **0** / 76834 | **0** / 76837 | **0** / 80672 |
+| WHS | +0.010 ns | +0.011 ns | +0.010 ns |
 | Failing hold endpoints | **0** | **0** | **0** |
-| CLB LUTs | **19208** | **19203** | 20236 |
-| CLB registers | **24640** | 24642 | 27470 |
+| CLB LUTs | **19864** | **19856** | 20879 |
+| CLB registers | **25184** | 25185 | 28019 |
 | Block RAM tiles | **45** | **45** | 49.5 |
 | DSPs | **43** | **43** | 53 |
+
+These are larger and tighter than the figures this table carried before the
+control path moved to its own PS master: about 650 more LUTs and 540 more
+registers for the extra SmartConnect and the second master port, and roughly
+0.25 ns less slack. That is what removing the AP_DONE fault costs, and it is
+worth it — see *The AP_DONE timeout* below.
 
 Post-route signoff, not the router's estimate — the two differ by about 7 ps
 here, and it is the signoff number that means anything.
@@ -1262,36 +1268,48 @@ live at 1280x720, ~57 fps to the DisplayPort, and through the accelerator at
 
 ### Still open, and not to be shipped as fine
 
-**The AP_DONE timeout is the control path's clock crossing.** Intermittently a
-frame appears not to complete, at roughly one in a thousand. The accelerator is
-**not** at fault, and neither is its control block. What the fault needs is the
-AXI4-Lite clock crossing between the 100 MHz control path and the 187.5 MHz
-accelerator — remove that crossing and the fault disappears entirely.
+**The AP_DONE timeout was the control path's clock crossing, and it is fixed.**
+Intermittently a frame appeared not to complete, at roughly one in a thousand.
+The accelerator was never at fault. What the fault needed was the AXI4-Lite
+clock crossing between the 100 MHz control path and the 187.5 MHz accelerator.
 
-The decisive measurement, all with the software workaround **disabled**
-(`probe_apdone.py --no-latch`, which is what that flag is for):
+The accelerator now has its **own PS master** — `HPM1_FPD`, clocked from the
+same `pl_clk2` it runs on — so its control path never crosses a domain. The
+camera's control path is untouched at 100 MHz, and the accelerator keeps full
+speed.
 
-| control path | timeouts |
-|---|---|
-| crossing inside `axi_interconnect` (M03 clocked separately) | ~0.5% |
-| crossing via an explicit `axi_clock_converter`, `ACLK_ASYNC=1` | ~0.5% |
-| **no crossing — `-tclargs sv oneclk`, everything on `pl_clk0`** | **0 in 8000** |
+Every figure below was taken with the software workaround **disabled**
+(`probe_apdone.py --no-latch`, which is what that flag exists for):
 
-The frame time confirms the last build took effect: 9.54 ms against 5.15 ms,
-exactly the 187.5 -> 100 MHz ratio.
+| control path | accelerator | timeouts |
+|---|---|---|
+| crossing inside `axi_interconnect` (`-tclargs sv xclk`) | 187.5 MHz | ~0.5% |
+| crossing via an explicit `axi_clock_converter` | 187.5 MHz | ~0.5% |
+| no crossing, everything at 100 MHz (`-tclargs sv oneclk`) | 100 MHz | 0 in 8000 |
+| **no crossing, dedicated master (the default)** | **187.5 MHz** | **0 in 8000** |
 
-**What is established.** The accelerator completes the frame — the
-destination's last word is written on every timeout, 9 out of 9 — and asserts
-`ap_done`, which `IP_ISR` latches. An ILA on the accelerator's control port
-catches it presenting `0x0000000E` (`ap_done | ap_idle | ap_ready`) exactly
-once, exactly where it should. Software never sees it, keeps polling, and the
-frame that *appears* to time out is the next one, never armed because software
-is still waiting on a completion it already lost. `AP_DONE` is clear-on-read,
-so a read whose data goes missing destroys the completion outright.
+The last two rows are what make this a result rather than a coincidence.
+`oneclk` changed two things at once — it removed the crossing *and* halved the
+accelerator — so on its own it could not distinguish them. The dedicated master
+changes only the crossing, and it fixes the fault at full speed. All three
+implementations are clean: 4000 frames each, 0 timeouts, `sv` 5.147 ms,
+`vhdl` 5.146 ms, `hls` 5.089 ms. The `hls` result carries the most weight,
+because Vitis HLS generates its own control block and shares none of this
+chapter's RTL.
 
-**What is not.** Why a correct crossing loses data. The converter is
-structurally right (`ACLK_ASYNC=1`, both frequencies propagated correctly) and
-its paths are properly constrained and met:
+**The mechanism.** The accelerator completes the frame — the destination's last
+word is written on every timeout, 9 out of 9 — and asserts `ap_done`, which
+`IP_ISR` latches. An ILA on its control port catches it presenting
+`0x0000000E` (`ap_done | ap_idle | ap_ready`) exactly once, exactly where it
+should. About one read in a thousand crossing the domain was acknowledged at
+the accelerator and never delivered to the PS. `AP_DONE` is clear-on-read, so
+the acknowledgement destroys the completion rather than delaying it: software
+then waits forever on a frame that finished, and the frame it fails to arm next
+is the one that appears to time out.
+
+**What is still unexplained** is why a correct crossing loses data at all. The
+converter was structurally right (`ACLK_ASYNC=1`, both frequencies propagated)
+and its paths were properly constrained and met:
 
 ```
 clk_pl_0 -> clk_pl_2   WNS 15.23  requirement 16.00   0 failing / 53 endpoints
@@ -1299,27 +1317,29 @@ clk_pl_2 -> clk_pl_0   WNS 29.39  requirement 30.00   0 failing / 42 endpoints
                                           Max Delay Datapath Only
 ```
 
-Structure correct, constraints present, timing met — and the fault is still
-there until the crossing goes away. That is not yet explained. One detail
-worth a look by whoever picks this up: a 16 ns max-delay on paths captured by a
-5.33 ns clock is loose, and the two clocks are not truly asynchronous — both
-come from the same PLL, 1500 MHz divided by 15 and by 8.
+Two details for anyone who wants to close that question: a 16 ns max-delay on
+paths captured by a 5.33 ns clock is loose, and the two clocks are not truly
+asynchronous — both come from the same PLL, 1500 MHz divided by 15 and by 8.
+The fix does not depend on the answer; avoiding the crossing avoids the
+question.
 
-**`oneclk` is a diagnostic, not the fix.** It costs half the accelerator's
-throughput, and every performance number in this chapter is against 187.5 MHz.
-The shipped mitigation remains the `IP_ISR` latch in `sw/filter_driver.py`,
-which is on by default, costs nothing, and now has a demonstrated mechanism
-behind it rather than a guess.
+`-tclargs sv xclk` rebuilds the faulty architecture on purpose. A fault that
+cannot be reproduced on demand is a story rather than a result, and anyone who
+doubts this account can measure both.
 
-**Seven theories were measured away to get here**, each one plausible and each
-refuted by an experiment built to refute it: a clear-on-read race in the
-control block (96 phase and latency combinations in `tb/tb_ctrl_race.sv`); a
-start dropped by the `ap_idle` guard (removed, rate unchanged); duplicate
+**The `IP_ISR` latch stays on by default** in `sw/filter_driver.py`. It costs
+nothing, and it covers the case where a crossing cannot be avoided — which is
+exactly the case CH13's reconfigurable socket will face.
+
+**Seven theories were measured away before the eighth held**, each plausible
+and each refuted by an experiment built to refute it: a clear-on-read race in
+the control block (96 phase and latency combinations in `tb/tb_ctrl_race.sv`);
+a start dropped by the `ap_idle` guard (removed, rate unchanged); duplicate
 `ap_done` pulses (no fast frames in 3,981); the poll reading stale data (a
 fresh read at the deadline agrees); a spurious reset (argument registers
-intact); a missing CDC (there wasn't one missing); and missing CDC constraints
-(they are present and met). The value of the list is that it says where the
-fault is not.
+intact); a missing CDC (nothing was missing); and missing CDC constraints (they
+are present and met). Keeping the list is the point: it says where the fault is
+not, which is most of what the hunt produced.
 
 **The stall is understood but not conclusively closed.** The SOF mechanism above
 is real, root-caused and fixed, with tests built from the literal hardware
