@@ -46,9 +46,17 @@ module rm_passthrough_core
    input wire          m_ready
    );
 
-  logic [31:0] total_r, count_r;
+  // Row and column counters rather than a pixel count, deliberately. Counting
+  // to width*height needs a 32x32 multiply, and out-of-context synthesis
+  // showed that costing a DSP the windowed cores do not spend -- rm_shell
+  // already computes the same product for the burst engines, so the core was
+  // paying for it twice. Nested counters cost an adder.
+  logic [15:0] w_r, h_r;
+  logic [15:0] r_cnt, c_cnt;
   logic        running;
   logic        s0_v, s1_v;
+
+  wire last_step = (r_cnt == h_r - 16'd1) && (c_cnt == w_r - 16'd1);
 
   logic en;
   assign en = (!s0_v || s_valid) && (!s1_v || m_ready);
@@ -61,22 +69,32 @@ module rm_passthrough_core
       running <= 1'b0;
       s0_v    <= 1'b0;
       s1_v    <= 1'b0;
-      count_r <= '0;
-      total_r <= '0;
+      w_r     <= '0;
+      h_r     <= '0;
+      r_cnt   <= '0;
+      c_cnt   <= '0;
       done    <= 1'b0;
     end else begin
       done <= 1'b0;
 
       if (start && !running) begin
-        total_r <= 32'(img_width) * 32'(img_height);
-        count_r <= '0;
+        w_r     <= img_width;
+        h_r     <= img_height;
+        r_cnt   <= '0;
+        c_cnt   <= '0;
         s0_v    <= (img_width != 0) && (img_height != 0);
         running <= 1'b1;
       end else if (running) begin
         if (en) begin
           if (s0_v) begin
-            count_r <= count_r + 1'b1;
-            if (count_r + 1'b1 == total_r) s0_v <= 1'b0;
+            if (last_step) begin
+              s0_v <= 1'b0;
+            end else if (c_cnt == w_r - 16'd1) begin
+              c_cnt <= '0;
+              r_cnt <= r_cnt + 1'b1;
+            end else begin
+              c_cnt <= c_cnt + 1'b1;
+            end
           end
           s1_v <= s0_v;
         end
