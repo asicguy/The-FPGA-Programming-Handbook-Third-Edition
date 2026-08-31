@@ -42,6 +42,27 @@ set ch13_pynq_ip [list \
 # thousand. See docs/ch13-plan.md 2.3 and CH12/README.md.
 set ch13_socket_mhz 200
 
+# Where the socket's AXI4-Lite control port lives.
+#
+# This is an APERTURE, not just an address, and DFX makes the difference matter.
+# The static region's address decode is routed once and cannot change when a
+# partial lands, so every RM must decode the SAME range -- Vivado enforces that
+# by requiring the aperture to be declared on the container's boundary rather
+# than inferred per RM. Left to inference it fails with
+#   CRITICAL WARNING [BD 41-3089] Cannot infer aperture ... on interface
+#   </socket/s_axi_control>
+# which lists the valid apertures through the master that reaches it.
+#
+# 0xB0000000 because that is the first valid aperture through M_AXI_HPM1_FPD,
+# the dedicated master the socket's control path uses. It is also well clear of
+# the camera's 0xA0000000 video IPs and the 0x80000000 AXI4-Lite peripherals.
+set ch13_socket_base 0xB0000000
+set ch13_socket_range 64K
+
+# The DFX status and control GPIO, in the STATIC region. Software reads this
+# BEFORE it touches the socket -- see docs/ch13-plan.md 2.2.
+set ch13_dfx_ctrl_base 0x80170000
+
 # 300 MHz for the MIPI datapath. AMD's number for the camera pipeline, not a
 # choice: the CSI-2 subsystem, demosaic, gamma LUT and CSC are configured for
 # it.
