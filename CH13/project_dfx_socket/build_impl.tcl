@@ -80,8 +80,9 @@ foreach name [ch13_rm_names] {
     if {[llength $rm] != 1} { error "expected one reconfig module for $name, got: $rm" }
     set rmname [get_property NAME $rm]
     set cfg config_$name
-    if {[llength [get_pr_configurations -quiet $cfg]]} { delete_pr_configurations $cfg }
-    create_pr_configuration -name $cfg -partitions [list $socket_cell:$rmname]
+    if {![llength [get_pr_configurations -quiet $cfg]]} {
+        create_pr_configuration -name $cfg -partitions [list $socket_cell:$rmname]
+    }
     lappend configs $cfg
     puts "   $cfg -> $rmname"
 }
@@ -98,44 +99,71 @@ set child_runs {}
 foreach name [ch13_rm_names] {
     if {$name eq $boot_rm} { continue }
     set r child_$name
-    if {[llength [get_runs -quiet $r]]} { delete_runs $r }
-    create_run $r -parent_run impl_1 -flow {Vivado Implementation 2025} \
-        -pr_config config_$name
+    # Kept if it already exists, so re-running this script to resume does not
+    # throw away a completed implementation.
+    if {![llength [get_runs -quiet $r]]} {
+        create_run $r -parent_run impl_1 -flow {Vivado Implementation 2025} \
+            -pr_config config_$name
+        puts " child run: $r (parent impl_1)"
+    } else {
+        puts " child run: $r exists ([get_property PROGRESS [get_runs $r]])"
+    }
     lappend child_runs $r
-    puts " child run: $r (parent impl_1)"
 }
 
 # ---------------------------------------------------------------------------
 # Synthesis, then the parent implementation, then the children
 # ---------------------------------------------------------------------------
-launch_runs synth_1 -jobs $jobs
-wait_on_run synth_1
+# Skip synthesis if it is already done -- this script is re-run while iterating
+# on implementation, and re-launching a finished run is an error, not a no-op.
+if {[get_property PROGRESS [get_runs synth_1]] ne "100%"} {
+    launch_runs synth_1 -jobs $jobs
+    wait_on_run synth_1
+}
 if {[get_property PROGRESS [get_runs synth_1]] ne "100%"} {
     error "synth_1 failed -- see $proj_dir/$proj_name.runs/synth_1"
 }
+puts " synth_1 complete"
 
 # Every RM's own synthesis run. With a Block Design Container these are created
 # for us, one per child design, and all of them must finish before any partial
 # can be implemented.
-set rm_synth [get_runs -quiet -filter {IS_SYNTHESIS && NAME =~ *inst_0_synth*}]
+#
+# `launch_runs synth_1` already runs them: they are out-of-context runs of the
+# container's child designs, and Vivado schedules them as dependencies. So the
+# only ones to launch here are any that are somehow NOT complete -- launching a
+# finished run is refused outright:
+#   ERROR [Common 17-69] Runs '...' need to be reset before launching.
+# which stops the build dead after a perfectly successful synthesis.
+set rm_synth {}
+foreach r [get_runs -quiet -filter {IS_SYNTHESIS && NAME =~ *inst_0_synth*}] {
+    if {[get_property PROGRESS [get_runs $r]] ne "100%"} { lappend rm_synth $r }
+}
 if {[llength $rm_synth]} {
-    puts " RM synthesis runs: $rm_synth"
+    puts " RM synthesis runs still to do: $rm_synth"
     launch_runs $rm_synth -jobs $jobs
     foreach r $rm_synth { wait_on_run $r }
-    foreach r $rm_synth {
-        if {[get_property PROGRESS [get_runs $r]] ne "100%"} { error "$r failed" }
+}
+foreach r [get_runs -quiet -filter {IS_SYNTHESIS && NAME =~ *inst_0_synth*}] {
+    if {[get_property PROGRESS [get_runs $r]] ne "100%"} {
+        error "$r did not complete ([get_property PROGRESS [get_runs $r]])"
     }
 }
+puts " all RM synthesis runs complete"
 
-launch_runs impl_1 -to_step write_bitstream -jobs $jobs
-wait_on_run impl_1
+if {[get_property PROGRESS [get_runs impl_1]] ne "100%"} {
+    launch_runs impl_1 -to_step write_bitstream -jobs $jobs
+    wait_on_run impl_1
+}
 if {[get_property PROGRESS [get_runs impl_1]] ne "100%"} {
     error "impl_1 failed -- see $proj_dir/$proj_name.runs/impl_1"
 }
 
 foreach r $child_runs {
-    launch_runs $r -to_step write_bitstream -jobs $jobs
-    wait_on_run $r
+    if {[get_property PROGRESS [get_runs $r]] ne "100%"} {
+        launch_runs $r -to_step write_bitstream -jobs $jobs
+        wait_on_run $r
+    }
     if {[get_property PROGRESS [get_runs $r]] ne "100%"} {
         error "$r failed -- see $proj_dir/$proj_name.runs/$r"
     }

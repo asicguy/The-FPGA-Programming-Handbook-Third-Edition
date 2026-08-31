@@ -54,6 +54,18 @@ set boot_rm passthrough
 ch13_require_dir $ch13_board_repo "AUP-ZU3 board files"
 ch13_require_dir $ch13_aup_zu3    "AUP-ZU3 PYNQ repo"
 
+# Fail before anything is built if the kernel ids have drifted apart. The id is
+# what proves a swap actually happened, so a driver whose copy no longer matches
+# the hardware's compares two stale constants and accepts whatever is in the
+# socket -- the one safeguard against loading the wrong partial stops working,
+# and nothing looks wrong. See common/check_ids.py.
+set check_ids [file join $script_dir .. common check_ids.py]
+if {[catch {exec python3 $check_ids} out]} {
+    puts $out
+    error "kernel ids disagree across the RTL, the Tcl and the Python -- see above"
+}
+puts $out
+
 # ---------------------------------------------------------------------------
 # Package every RM as IP, one repo each -- ch13_rm_vlnv wipes what it is given.
 # ---------------------------------------------------------------------------
