@@ -35,7 +35,8 @@ pin cannot move.
 | Partial, each RM | 960 KB |
 | Timing | WNS **+0.146 ns** worst of four configurations, 0 failing endpoints |
 | `pr_verify` | passes for every configuration against the static |
-| Bit-exactness | every mode of every kernel, 0 differing samples |
+| Bit-exactness | every mode of every kernel, 0 differing samples, on live 720p camera frames |
+| On the panel | camera → socket → 1920×1080, 43–44 frames per 4 s window through each kernel |
 
 ## The socket contract
 
@@ -320,10 +321,11 @@ the 20-bit run showed no read over 0.05 ms, and a steady-state loop measures
 8-10 ms is measurement tail. The two large outliers did not recur and remain
 unexplained.
 
-**The camera has not yet been streamed across a swap.** The bit-exactness
-results use frozen synthetic frames, which is the stronger check for
-correctness; "swap while the camera runs" is written in the notebook but not yet
-measured.
-
-**The DisplayPort sections are unrun** — the board's display is currently held
-by CH11's `ch11-dp.service`.
+**Anything holding DRM master makes the DisplayPort output silently do
+nothing.** `writeframe()` returns promptly and displays nothing, which is
+indistinguishable from working unless someone is watching the panel. Stopping
+`pynq-x11.service` is *not* sufficient: an X session also comes up from
+`/root/.xinitrc` in a root login that the unit does not own, and it keeps DRM
+master. `fuser -v /dev/dri/card0` is the check that catches it. `ch11-dp.service`
+is a separate hazard — it drives CH11's own bitstream, so reprogramming the PL
+under it points its register reads at hardware that no longer exists.
