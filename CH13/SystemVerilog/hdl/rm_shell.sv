@@ -37,8 +37,7 @@ module rm_shell
    parameter C_M_AXI_GMEM_ID_WIDTH      = 1,
    parameter FIFO_DEPTH                 = 512,
    // The identity this RM reports at register 0x3C. See sw/rm_ref.py.
-   parameter [31:0] KERNEL_ID           = 32'hA5A5_0000,
-   parameter HB_BITS                    = 24
+   parameter [31:0] KERNEL_ID           = 32'hA5A5_0000
    )
   (
    input wire                                  ap_clk,
@@ -195,8 +194,12 @@ module rm_shell
   socket_ctrl
     #(.ADDR_WIDTH (C_S_AXI_CONTROL_ADDR_WIDTH),
       .DATA_WIDTH (C_S_AXI_CONTROL_DATA_WIDTH),
-      .KERNEL_ID  (KERNEL_ID),
-      .HB_BITS    (HB_BITS))
+      // HB_BITS is deliberately NOT overridden here. It sets the floor on
+      // swap latency, so it belongs in exactly one place -- socket_ctrl -- and
+      // a default on this module would silently shadow it. It did: the leaf
+      // said 20, this said 24, and the hardware spent 45.5 ms of every swap
+      // waiting for a toggle. See tb_rm.sv check_heartbeat_rate.
+      .KERNEL_ID  (KERNEL_ID))
   u_ctrl
     (.clk        (ap_clk),
      .rst_n      (ap_rst_n),

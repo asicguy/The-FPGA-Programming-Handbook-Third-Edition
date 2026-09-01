@@ -97,6 +97,10 @@ module tb_rm;
   logic [1:0]  g1_bresp;
   logic        g1_bvalid, g1_bready;
 
+  // The heartbeat period is a contract, not a detail. See
+  // check_heartbeat_rate below.
+  localparam int HB_BITS_EXPECTED = 20;
+
   rm_dut dut
     (.ap_clk (ap_clk), .ap_rst_n (ap_rst_n), .interrupt (interrupt),
      .heartbeat (heartbeat),
@@ -567,6 +571,30 @@ module tb_rm;
     end
   endtask
 
+  // The heartbeat PERIOD is the floor on how long a swap takes: liveness is
+  // decided by watching the toggle CHANGE, and that cannot be observed faster
+  // than half a period. socket_ctrl carries the intended default, but every RM
+  // reaches it through rm_shell, and an intermediate default silently
+  // overriding the leaf is invisible in a simulation that only asks whether
+  // the heartbeat is driven at all. That is not hypothetical -- it cost 45.5 ms
+  // on every hardware swap while the leaf said 20 and the shell still said 24.
+  //
+  // Checked as a parameter rather than measured, because at the real setting
+  // one toggle is 2^19 cycles and this testbench has frames to process.
+  task automatic check_heartbeat_rate;
+    int got_param, got_width;
+    begin
+      got_param = dut.u_dut.u_shell.u_ctrl.HB_BITS;
+      got_width = $bits(dut.u_dut.u_shell.u_ctrl.hb_cnt);
+      if (got_param != HB_BITS_EXPECTED || got_width != HB_BITS_EXPECTED) begin
+        $display("    HB_BITS arriving at socket_ctrl is %0d (counter %0d bits), expected %0d",
+                 got_param, got_width, HB_BITS_EXPECTED);
+        errors_total++;
+      end else
+        $display("  [%-18s] HB_BITS = %0d survives rm_shell", "HEARTBEAT RATE", got_param);
+    end
+  endtask
+
   initial begin
     ctrl_awvalid = 0; ctrl_wvalid = 0; ctrl_bready = 0;
     ctrl_arvalid = 0; ctrl_rready = 0; ctrl_wstrb = 4'hF;
@@ -582,6 +610,7 @@ module tb_rm;
 
     check_kernel_id();
     check_heartbeat();
+    check_heartbeat_rate();
 
 `ifdef RM_SOBEL
     run_case( 64, 48, MODE_GRAY,   "GRAY 64x48");
