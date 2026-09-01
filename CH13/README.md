@@ -30,10 +30,10 @@ pin cannot move.
 
 | | |
 |---|---|
-| Swap time | **~138 ms**, of which ~87 ms is the PCAP transfer |
+| Swap time | **~101 ms**, of which ~88 ms is the PCAP transfer |
 | Full bitstream | 5438 KB |
 | Partial, each RM | 960 KB |
-| Timing | WNS **+0.438 ns**, 0 failing endpoints, all four configurations |
+| Timing | WNS **+0.146 ns** worst of four configurations, 0 failing endpoints |
 | `pr_verify` | passes for every configuration against the static |
 | Bit-exactness | every mode of every kernel, 0 differing samples |
 
@@ -195,7 +195,7 @@ it at the source for one cycle of latency nothing can observe.
 
 ## What a swap costs, honestly
 
-A swap is **not invisible**. At ~138 ms it is roughly eight frames at 60 fps: the
+A swap is **not invisible**. At ~101 ms it is roughly six frames at 60 fps: the
 pipeline stalls and resumes with different hardware in the socket. That is a
 great deal better than a reboot and should be presented as that, not as
 seamlessness.
@@ -215,6 +215,23 @@ that software can poll it" without costing what it would do to the thing the
 socket exists to do. A status signal's rate is not a free parameter: it sets the
 floor on how fast anything waiting for it can be, and that floor is invisible
 until something is measured against it.
+
+Measured, that is exactly what it was. At `HB_BITS` 24 the liveness check took
+**45.5 ms on every one of five swaps** -- not approximately, identically, which
+is the signature of a wait on a fixed divider rather than of work. At 20 it is
+3.3 ms, and the swap went from 138 ms to 101 ms.
+
+The fix took two attempts, and the first one is the more useful lesson.
+`socket_ctrl` carried the intended default, `rm_shell` declared its own
+`HB_BITS = 24` and passed it down, and no RM top overrode either. Changing the
+leaf changed nothing: the build kept the shell's value, the design still
+compiled, simulation still passed, and the hardware still spent 45.5 ms a swap.
+Two defaults for one constant is the defect; the second one is only where it
+surfaced. `rm_shell` no longer declares or forwards `HB_BITS` at all, so
+`socket_ctrl` is the single definition, and `tb_rm.sv`'s `check_heartbeat_rate`
+asserts the value that *arrives* -- the previous check only asked whether the
+heartbeat was driven at all, which is why a 24-against-20 mismatch passed
+simulation four times over.
 
 ## Resource cost of each RM
 
@@ -278,18 +295,30 @@ answers before enabling reconfiguration.
 
 ## Still open
 
-**The heartbeat change is unverified on hardware.** The ~138 ms result above is
-from a real run of the `HB_BITS=24` design: five swaps, every kernel bit-exact.
-Reducing the divider to 20 should remove ~45 ms of it, and the design rebuilds
-clean with the same timing and the same `pr_verify` result — but the board went
-down during the re-measurement, before any swap completed, and the cause is not
-yet known. Do not quote a figure below 138 ms until that run succeeds.
+**One board hang is unexplained.** During an earlier attempt at the heartbeat
+re-measurement the board went down before any swap completed, and there was no
+serial console running, so there is no diagnosis. It has not recurred: the
+`HB_BITS=24` design was later run again to completion with the console captured,
+and the `HB_BITS=20` design after it, both clean and both silent on the console.
+An unreproduced hang with no evidence is recorded as exactly that, not explained
+away.
 
-**There was no serial console capture during that run.** `docs/ch13-plan.md` §7
-asks for one before *any* hardware step, and skipping it is why the failure
-above has no diagnosis. Stage 2 now writes fsync'd breadcrumbs to
-`~/ch13/stage2.progress` on the board so a hang leaves evidence, but that is a
-poor substitute for the console.
+**`alive()`'s default sampling window is coupled to `HB_BITS` and does not say
+so.** It samples 32 times at 1 ms; against the 24-bit divider's 44.7 ms half
+period a standalone call was a coin flip, and returned `True` then `False` on
+consecutive calls. It is fail-safe -- a false negative refuses to read, and a
+false positive cannot happen, because a change is a change -- and `swap()` wraps
+it in a 1 s retry, which is why every swap succeeded regardless. At 20 bits it is
+correct as documented. Making it wait on a *timeout* rather than a sample count
+would remove the coupling.
+
+**Where the last few milliseconds of a swap go is not fully accounted for.** In
+the `HB_BITS=24` runs the final step was erratic -- 6.7, 9.7, 11.1, 183 and
+344 ms for what is a single register read. Instrumenting every MMIO access in
+the 20-bit run showed no read over 0.05 ms, and a steady-state loop measures
+9 us median over 2000 samples, so the register path is exonerated; the residual
+8-10 ms is measurement tail. The two large outliers did not recur and remain
+unexplained.
 
 **The camera has not yet been streamed across a swap.** The bit-exactness
 results use frozen synthetic frames, which is the stronger check for
