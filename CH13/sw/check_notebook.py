@@ -79,17 +79,61 @@ for i, c in enumerate(nb["cells"]):
         sys.exit("  cell %d is one line of %d chars -- collapsed source" % (i, length))
 print("  no collapsed cells")
 
-# --- 3. run them, with the interactive loop bounded to one iteration ------
+# --- 3. run them, and prove the Stop button stops the sampler -------------
+# The live cell samples on a BACKGROUND THREAD and returns immediately, so it
+# can be executed as-is; nothing has to be rewritten to avoid hanging.
+#
+# That structure is the fix for a real bug: a plain `while` loop in a cell
+# blocks the kernel, so the click never reaches the handler and Stop does
+# nothing. Since the button is the thing that broke, the check presses it.
+import time
+
 print("\n--- executing against hardware ---")
 g = {}
 for i, src in code_cells:
-    if "while not stop.value:" in src:
-        # Run the body once instead of forever. `stop` is still constructed,
-        # so the widget setup is exercised too.
-        src = src.replace("while not stop.value:", "for _once in range(1):")
-        print("  cell %-2d running (loop bounded to one iteration)" % i)
-    else:
-        print("  cell %-2d running" % i)
+    print("  cell %-2d running" % i)
     exec(compile(src, "<cell%d>" % i, "exec"), g)
 
-print("\nNOTEBOOK OK -- every cell compiled and ran, interactive cell included")
+    sampler = g.get("_sampler")
+    if sampler is None or not sampler.is_alive():
+        continue
+
+    # It is sampling. Let it take a few readings, then press Stop for real.
+    time.sleep(0.5)
+    moved = g["meter"].value
+    g["stop_btn"].click()
+    sampler.join(timeout=5.0)
+
+    if sampler.is_alive():
+        sys.exit("  cell %d: STOP BUTTON DID NOT STOP THE SAMPLER" % i)
+    if moved == 0.0:
+        sys.exit("  cell %d: sampler ran but the meter never updated" % i)
+    print("       sampler took readings (meter %.4f V), Stop stopped it" % moved)
+
+# --- 4. re-running the live cell must not leave two samplers running ------
+# People re-run cells. If the previous thread survived, two of them would be
+# writing the same widgets and the same LED GPIO, which is a genuinely
+# unpleasant thing to debug from the symptoms.
+live = [(i, src) for i, src in code_cells if "_sampler" in src]
+if live:
+    i, src = live[0]
+    print("\n--- re-running cell %d while its sampler is still going ---" % i)
+    exec(compile(src, "<cell%d>" % i, "exec"), g)
+    first = g["_sampler"]
+    time.sleep(0.3)
+    exec(compile(src, "<cell%d>" % i, "exec"), g)   # again, deliberately
+    second = g["_sampler"]
+
+    if first is second:
+        sys.exit("  re-running did not create a new sampler")
+    if first.is_alive():
+        sys.exit("  THE PREVIOUS SAMPLER SURVIVED -- two threads now share the GPIO")
+    print("       previous sampler stopped, exactly one running")
+
+    g["stop_btn"].click()
+    second.join(timeout=5.0)
+    if second.is_alive():
+        sys.exit("  the replacement sampler would not stop")
+    print("       replacement stopped cleanly")
+
+print("\nNOTEBOOK OK -- every cell compiled and ran, Stop button verified")
