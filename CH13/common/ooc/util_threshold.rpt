@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 -------------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
-| Date         : Sun Aug 30 21:30:40 2026
+| Date         : Sat Sep  5 10:37:52 2026
 | Host         : HoboKitty running 64-bit Ubuntu 24.04.4 LTS
 | Command      : report_utilization -file /home/fbruno/git/books/The-FPGA-Programming-Handbook-Third-Edition/CH13/common/ooc/util_threshold.rpt -quiet
 | Design       : rm_threshold
@@ -32,13 +32,13 @@ Table of Contents
 +----------------------------+------+-------+------------+-----------+-------+
 |          Site Type         | Used | Fixed | Prohibited | Available | Util% |
 +----------------------------+------+-------+------------+-----------+-------+
-| CLB LUTs*                  | 1240 |     0 |          0 |     70560 |  1.76 |
-|   LUT as Logic             |  920 |     0 |          0 |     70560 |  1.30 |
+| CLB LUTs*                  | 1239 |     0 |          0 |     70560 |  1.76 |
+|   LUT as Logic             |  919 |     0 |          0 |     70560 |  1.30 |
 |   LUT as Memory            |  320 |     0 |          0 |     28800 |  1.11 |
 |     LUT as Distributed RAM |  320 |     0 |            |           |       |
 |     LUT as Shift Register  |    0 |     0 |            |           |       |
-| CLB Registers              |  709 |     0 |          0 |    141120 |  0.50 |
-|   Register as Flip Flop    |  709 |     0 |          0 |    141120 |  0.50 |
+| CLB Registers              |  722 |     0 |          0 |    141120 |  0.51 |
+|   Register as Flip Flop    |  722 |     0 |          0 |    141120 |  0.51 |
 |   Register as Latch        |    0 |     0 |          0 |    141120 |  0.00 |
 | CARRY8                     |   61 |     0 |          0 |      8820 |  0.69 |
 | F7 Muxes                   |   22 |     0 |          0 |     35280 |  0.06 |
@@ -67,7 +67,7 @@ Warning! For any ECO changes, please run place_design if there are unplaced inst
 | 0     |          Yes |           - |          Set |
 | 0     |          Yes |           - |        Reset |
 | 1     |          Yes |         Set |            - |
-| 708   |          Yes |       Reset |            - |
+| 721   |          Yes |       Reset |            - |
 +-------+--------------+-------------+--------------+
 
 
@@ -166,13 +166,13 @@ Warning! For any ECO changes, please run place_design if there are unplaced inst
 +----------+------+---------------------+
 | Ref Name | Used | Functional Category |
 +----------+------+---------------------+
-| FDRE     |  708 |            Register |
+| FDRE     |  721 |            Register |
 | RAMD64E  |  320 |                 CLB |
-| LUT6     |  299 |                 CLB |
-| LUT3     |  289 |                 CLB |
-| LUT5     |  166 |                 CLB |
-| LUT2     |  144 |                 CLB |
-| LUT4     |  131 |                 CLB |
+| LUT6     |  298 |                 CLB |
+| LUT3     |  290 |                 CLB |
+| LUT5     |  164 |                 CLB |
+| LUT2     |  143 |                 CLB |
+| LUT4     |  132 |                 CLB |
 | CARRY8   |   61 |                 CLB |
 | LUT1     |   47 |                 CLB |
 | MUXF7    |   22 |                 CLB |

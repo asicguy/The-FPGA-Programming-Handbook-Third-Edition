@@ -294,6 +294,53 @@ re-running it continues rather than discarding finished work.
 partition — an ordinary overlay. That is the staged bring-up: prove the socket
 answers before enabling reconfiguration.
 
+## Getting it onto the board
+
+The overlay is not built by Vivado and is gitignored, so it is the one step
+that is easy to forget:
+
+```bash
+make -C project_dfx_socket/dts          # dfx_socket.dtbo
+deploy/deploy.sh                        # copy to the board and verify
+```
+
+`deploy.sh` takes `--board`, `--user` and `--dest`; it copies files and nothing
+else -- it starts no service and does not reprogram the PL. The layout it
+writes is not a matter of taste, because the notebook reaches for `../out` and
+`../sw` and must run without editing a path:
+
+```
+/home/xilinx/ch13_dfx/            11 MB
+├── out/         dfx_socket.{bit,hwh,dtbo} + 4 x socket_*_partial.bit
+├── sw/          dfx_socket.py rm_ref.py test_*.py
+│                + ov5647.py ov5647_regs.py pixel_packer.py from CH12
+└── notebooks/   ch13_dfx_socket.ipynb
+```
+
+The `.dtbo` sits in `out/` beside the bitstream because PYNQ pairs an overlay
+to a bitstream by filename, and the partials sit there because `swap_to()`
+globs `*partial*.bit` out of the same directory. CH12's camera driver travels
+along because the camera is in the static region -- that is the whole reason it
+survives a swap.
+
+Every file is checksummed after the copy. The board has no RTC, so timestamps
+prove nothing; md5 is the only honest check.
+
+The script finishes by naming the two things that ruin a run *silently* rather
+than loudly -- `ch11-dp` running, and anything holding DRM master on
+`/dev/dri/card0`. It only reports them. Stopping a service or killing an X
+session is the operator's call.
+
+The software tests run on the board, not the host:
+
+```bash
+ssh xilinx@192.168.3.1 'cd /home/xilinx/ch13_dfx/sw && python3 -m pytest -q'
+53 passed
+```
+
+`deploy/test_deploy.sh` covers `deploy.sh` itself, with `ssh` and `scp` stubbed
+and a directory standing in for the board, so it needs no hardware.
+
 ## Still open
 
 **One board hang is unexplained.** During an earlier attempt at the heartbeat

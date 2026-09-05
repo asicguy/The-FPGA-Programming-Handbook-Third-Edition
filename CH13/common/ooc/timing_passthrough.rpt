@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version      : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
-| Date              : Sun Aug 30 21:29:29 2026
+| Date              : Sat Sep  5 10:36:43 2026
 | Host              : HoboKitty running 64-bit Ubuntu 24.04.4 LTS
 | Command           : report_timing_summary -file /home/fbruno/git/books/The-FPGA-Programming-Handbook-Third-Edition/CH13/common/ooc/timing_passthrough.rpt -quiet
 | Design            : rm_passthrough
@@ -139,7 +139,7 @@ Table of Contents
 
     WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
     -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
-      0.321        0.000                      0                 6177        0.044        0.000                      0                 6177        1.968        0.000                       0                  1389  
+      1.210        0.000                      0                 6286        0.044        0.000                      0                 6286        1.968        0.000                       0                  1404  
 
 
 All user specified timing constraints are met.
@@ -162,7 +162,7 @@ ap_clk  {0.000 2.500}        5.000           200.000
 
 Clock             WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
 -----             -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
-ap_clk              0.321        0.000                      0                 6177        0.044        0.000                      0                 6177        1.968        0.000                       0                  1389  
+ap_clk              1.210        0.000                      0                 6286        0.044        0.000                      0                 6286        1.968        0.000                       0                  1404  
 
 
 ------------------------------------------------------------------------------------------------
@@ -193,7 +193,7 @@ Path Group    From Clock    To Clock          WNS(ns)      TNS(ns)  TNS Failing 
 From Clock:  ap_clk
   To Clock:  ap_clk
 
-Setup :            0  Failing Endpoints,  Worst Slack        0.321ns,  Total Violation        0.000ns
+Setup :            0  Failing Endpoints,  Worst Slack        1.210ns,  Total Violation        0.000ns
 Hold  :            0  Failing Endpoints,  Worst Slack        0.044ns,  Total Violation        0.000ns
 PW    :            0  Failing Endpoints,  Worst Slack        1.968ns,  Total Violation        0.000ns
 ---------------------------------------------------------------------------------------------------
@@ -201,16 +201,16 @@ PW    :            0  Failing Endpoints,  Worst Slack        1.968ns,  Total Vio
 
 Max Delay Paths
 --------------------------------------------------------------------------------------
-Slack (MET) :             0.321ns  (required time - arrival time)
-  Source:                 u_shell/u_ctrl/img_height_reg[15]/C
+Slack (MET) :             1.210ns  (required time - arrival time)
+  Source:                 u_shell/u_rd/words_left_reg[6]/C
                             (rising edge-triggered cell FDRE clocked by ap_clk  {rise@0.000ns fall@2.500ns period=5.000ns})
-  Destination:            u_core/c_cnt_reg[0]/R
+  Destination:            u_shell/u_rd/reserved_reg[8]/D
                             (rising edge-triggered cell FDRE clocked by ap_clk  {rise@0.000ns fall@2.500ns period=5.000ns})
   Path Group:             ap_clk
   Path Type:              Setup (Max at Slow Process Corner)
   Requirement:            5.000ns  (ap_clk rise@5.000ns - ap_clk rise@0.000ns)
-  Data Path Delay:        4.561ns  (logic 2.881ns (63.166%)  route 1.680ns (36.834%))
-  Logic Levels:           16  (CARRY8=2 DSP_A_B_DATA=1 DSP_ALU=2 DSP_M_DATA=1 DSP_MULTIPLIER=1 DSP_OUTPUT=2 DSP_PREADD_DATA=1 LUT2=1 LUT3=1 LUT4=2 LUT5=1 LUT6=1)
+  Data Path Delay:        3.771ns  (logic 1.121ns (29.727%)  route 2.650ns (70.273%))
+  Logic Levels:           14  (CARRY8=2 LUT2=1 LUT3=1 LUT4=4 LUT5=2 LUT6=4)
   Clock Path Skew:        -0.009ns (DCD - SCD + CPR)
     Destination Clock Delay (DCD):    0.021ns = ( 5.021 - 5.000 ) 
     Source Clock Delay      (SCD):    0.030ns
@@ -225,68 +225,56 @@ Slack (MET) :             0.321ns  (required time - arrival time)
   -------------------------------------------------------------------    -------------------
                          (clock ap_clk rise edge)     0.000     0.000 r  
                                                       0.000     0.000 r  ap_clk (IN)
-                         net (fo=1388, unset)         0.030     0.030    u_shell/u_ctrl/ap_clk
-                         FDRE                                         r  u_shell/u_ctrl/img_height_reg[15]/C
+                         net (fo=1413, unset)         0.030     0.030    u_shell/u_rd/ap_clk
+                         FDRE                                         r  u_shell/u_rd/words_left_reg[6]/C
   -------------------------------------------------------------------    -------------------
-                         FDRE (Prop_FDRE_C_Q)         0.077     0.107 f  u_shell/u_ctrl/img_height_reg[15]/Q
-                         net (fo=4, unplaced)         0.191     0.298    u_shell/total_words__0/B[15]
-                         DSP_A_B_DATA (Prop_DSP_A_B_DATA_B[15]_B2_DATA[15])
-                                                      0.151     0.449 r  u_shell/total_words__0/DSP_A_B_DATA_INST/B2_DATA[15]
-                         net (fo=1, unplaced)         0.000     0.449    u_shell/total_words__0/DSP_A_B_DATA.B2_DATA<15>
-                         DSP_PREADD_DATA (Prop_DSP_PREADD_DATA_B2_DATA[15]_B2B1[15])
-                                                      0.073     0.522 r  u_shell/total_words__0/DSP_PREADD_DATA_INST/B2B1[15]
-                         net (fo=1, unplaced)         0.000     0.522    u_shell/total_words__0/DSP_PREADD_DATA.B2B1<15>
-                         DSP_MULTIPLIER (Prop_DSP_MULTIPLIER_B2B1[15]_V[43])
-                                                      0.609     1.131 f  u_shell/total_words__0/DSP_MULTIPLIER_INST/V[43]
-                         net (fo=1, unplaced)         0.000     1.131    u_shell/total_words__0/DSP_MULTIPLIER.V<43>
-                         DSP_M_DATA (Prop_DSP_M_DATA_V[43]_V_DATA[43])
-                                                      0.046     1.177 r  u_shell/total_words__0/DSP_M_DATA_INST/V_DATA[43]
-                         net (fo=1, unplaced)         0.000     1.177    u_shell/total_words__0/DSP_M_DATA.V_DATA<43>
-                         DSP_ALU (Prop_DSP_ALU_V_DATA[43]_ALU_OUT[47])
-                                                      0.571     1.748 f  u_shell/total_words__0/DSP_ALU_INST/ALU_OUT[47]
-                         net (fo=1, unplaced)         0.000     1.748    u_shell/total_words__0/DSP_ALU.ALU_OUT<47>
-                         DSP_OUTPUT (Prop_DSP_OUTPUT_ALU_OUT[47]_PCOUT[47])
-                                                      0.122     1.870 r  u_shell/total_words__0/DSP_OUTPUT_INST/PCOUT[47]
-                         net (fo=1, unplaced)         0.014     1.884    u_shell/total_words__1/PCIN[47]
-                         DSP_ALU (Prop_DSP_ALU_PCIN[47]_ALU_OUT[0])
-                                                      0.546     2.430 f  u_shell/total_words__1/DSP_ALU_INST/ALU_OUT[0]
-                         net (fo=1, unplaced)         0.000     2.430    u_shell/total_words__1/DSP_ALU.ALU_OUT<0>
-                         DSP_OUTPUT (Prop_DSP_OUTPUT_ALU_OUT[0]_P[0])
-                                                      0.109     2.539 r  u_shell/total_words__1/DSP_OUTPUT_INST/P[0]
-                         net (fo=2, unplaced)         0.207     2.746    u_shell/p_1_in[17]
-                         LUT2 (Prop_LUT2_I0_O)        0.052     2.798 r  u_shell/total_words_carry_i_7/O
-                         net (fo=1, unplaced)         0.023     2.821    u_shell/total_words_carry_i_7_n_0
-                         CARRY8 (Prop_CARRY8_S[1]_CO[7])
-                                                      0.197     3.018 r  u_shell/total_words_carry/CO[7]
-                         net (fo=1, unplaced)         0.005     3.023    u_shell/total_words_carry_n_0
-                         CARRY8 (Prop_CARRY8_CI_O[4])
-                                                      0.086     3.109 r  u_shell/total_words_carry__0/O[4]
-                         net (fo=4, unplaced)         0.198     3.307    u_shell/u_rd/total_words__2[12]
-                         LUT4 (Prop_LUT4_I1_O)        0.090     3.397 r  u_shell/u_rd/w_r[15]_i_8/O
-                         net (fo=1, unplaced)         0.186     3.583    u_shell/u_rd/w_r[15]_i_8_n_0
-                         LUT5 (Prop_LUT5_I4_O)        0.038     3.621 r  u_shell/u_rd/w_r[15]_i_4/O
-                         net (fo=1, unplaced)         0.186     3.807    u_shell/u_rd/w_r[15]_i_4_n_0
-                         LUT4 (Prop_LUT4_I1_O)        0.038     3.845 r  u_shell/u_rd/w_r[15]_i_2/O
-                         net (fo=3, unplaced)         0.192     4.037    u_shell/u_ctrl/w_r_reg[15]
-                         LUT6 (Prop_LUT6_I3_O)        0.038     4.075 r  u_shell/u_ctrl/w_r[15]_i_1/O
-                         net (fo=36, unplaced)        0.248     4.323    u_core/running0
-                         LUT3 (Prop_LUT3_I2_O)        0.038     4.361 r  u_core/c_cnt[15]_i_1/O
-                         net (fo=16, unplaced)        0.230     4.591    u_core/c_cnt[15]_i_1_n_0
-                         FDRE                                         r  u_core/c_cnt_reg[0]/R
+                         FDRE (Prop_FDRE_C_Q)         0.078     0.108 f  u_shell/u_rd/words_left_reg[6]/Q
+                         net (fo=5, unplaced)         0.110     0.218    u_shell/u_rd/words_left_reg_n_0_[6]
+                         LUT4 (Prop_LUT4_I0_O)        0.139     0.357 f  u_shell/u_rd/m_axi_gmem0_arvalid_INST_0_i_4/O
+                         net (fo=1, unplaced)         0.186     0.543    u_shell/u_rd/m_axi_gmem0_arvalid_INST_0_i_4_n_0
+                         LUT5 (Prop_LUT5_I4_O)        0.038     0.581 r  u_shell/u_rd/m_axi_gmem0_arvalid_INST_0_i_2/O
+                         net (fo=3, unplaced)         0.192     0.773    u_shell/u_rd/m_axi_gmem0_arvalid_INST_0_i_2_n_0
+                         LUT4 (Prop_LUT4_I2_O)        0.038     0.811 f  u_shell/u_rd/m_axi_gmem0_arlen[7]_INST_0_i_6/O
+                         net (fo=14, unplaced)        0.227     1.038    u_shell/u_rd/m_axi_gmem0_arlen[7]_INST_0_i_6_n_0
+                         LUT2 (Prop_LUT2_I1_O)        0.070     1.108 r  u_shell/u_rd/m_axi_gmem0_arlen[5]_INST_0_i_7/O
+                         net (fo=3, unplaced)         0.192     1.300    u_shell/u_rd/m_axi_gmem0_arlen[5]_INST_0_i_7_n_0
+                         LUT6 (Prop_LUT6_I4_O)        0.038     1.338 r  u_shell/u_rd/burst_len1_carry_i_4/O
+                         net (fo=1, unplaced)         0.210     1.548    u_shell/u_rd/burst_len1_carry_i_4_n_0
+                         CARRY8 (Prop_CARRY8_DI[1]_CO[5])
+                                                      0.158     1.706 r  u_shell/u_rd/burst_len1_carry/CO[5]
+                         net (fo=32, unplaced)        0.155     1.861    u_shell/u_rd/burst_len1_carry_n_2
+                         LUT4 (Prop_LUT4_I3_O)        0.038     1.899 r  u_shell/u_rd/m_axi_gmem0_arlen[5]_INST_0_i_3/O
+                         net (fo=14, unplaced)        0.227     2.126    u_shell/u_fifo_in/addr_cur1[0]
+                         LUT4 (Prop_LUT4_I3_O)        0.070     2.196 f  u_shell/u_fifo_in/can_issue0_carry_i_6/O
+                         net (fo=1, unplaced)         0.254     2.450    u_shell/u_rd/DI[0]
+                         CARRY8 (Prop_CARRY8_DI[0]_CO[5])
+                                                      0.170     2.620 f  u_shell/u_rd/can_issue0_carry/CO[5]
+                         net (fo=2, unplaced)         0.095     2.715    u_shell/u_rd/can_issue0__5
+                         LUT6 (Prop_LUT6_I4_O)        0.038     2.753 r  u_shell/u_rd/addr_cur[63]_i_4/O
+                         net (fo=26, unplaced)        0.241     2.994    u_shell/u_rd/addr_cur[63]_i_4_n_0
+                         LUT3 (Prop_LUT3_I1_O)        0.070     3.064 f  u_shell/u_rd/reserved[7]_i_5/O
+                         net (fo=2, unplaced)         0.141     3.205    u_shell/u_rd/reserved[7]_i_5_n_0
+                         LUT5 (Prop_LUT5_I1_O)        0.100     3.305 r  u_shell/u_rd/reserved[6]_i_2/O
+                         net (fo=2, unplaced)         0.186     3.491    u_shell/u_rd/reserved[6]_i_2_n_0
+                         LUT6 (Prop_LUT6_I2_O)        0.038     3.529 r  u_shell/u_rd/reserved[8]_i_2/O
+                         net (fo=1, unplaced)         0.186     3.715    u_shell/u_rd/reserved[8]_i_2_n_0
+                         LUT6 (Prop_LUT6_I5_O)        0.038     3.753 r  u_shell/u_rd/reserved[8]_i_1/O
+                         net (fo=1, unplaced)         0.048     3.801    u_shell/u_rd/reserved[8]
+                         FDRE                                         r  u_shell/u_rd/reserved_reg[8]/D
   -------------------------------------------------------------------    -------------------
 
                          (clock ap_clk rise edge)     5.000     5.000 r  
                                                       0.000     5.000 r  ap_clk (IN)
-                         net (fo=1388, unset)         0.021     5.021    u_core/ap_clk
-                         FDRE                                         r  u_core/c_cnt_reg[0]/C
+                         net (fo=1413, unset)         0.021     5.021    u_shell/u_rd/ap_clk
+                         FDRE                                         r  u_shell/u_rd/reserved_reg[8]/C
                          clock pessimism              0.000     5.021    
                          clock uncertainty           -0.035     4.986    
-                         FDRE (Setup_FDRE_C_R)       -0.074     4.912    u_core/c_cnt_reg[0]
+                         FDRE (Setup_FDRE_C_D)        0.025     5.011    u_shell/u_rd/reserved_reg[8]
   -------------------------------------------------------------------
-                         required time                          4.912    
-                         arrival time                          -4.591    
+                         required time                          5.011    
+                         arrival time                          -3.801    
   -------------------------------------------------------------------
-                         slack                                  0.321    
+                         slack                                  1.210    
 
 
 
@@ -313,7 +301,7 @@ Slack (MET) :             0.044ns  (arrival time - required time)
   -------------------------------------------------------------------    -------------------
                          (clock ap_clk rise edge)     0.000     0.000 r  
                                                       0.000     0.000 r  ap_clk (IN)
-                         net (fo=1388, unset)         0.013     0.013    u_core/ap_clk
+                         net (fo=1413, unset)         0.013     0.013    u_core/ap_clk
                          FDRE                                         r  u_core/m_data_reg[2]/C
   -------------------------------------------------------------------    -------------------
                          FDRE (Prop_FDRE_C_Q)         0.038     0.051 r  u_core/m_data_reg[2]/Q
@@ -323,7 +311,7 @@ Slack (MET) :             0.044ns  (arrival time - required time)
 
                          (clock ap_clk rise edge)     0.000     0.000 r  
                                                       0.000     0.000 r  ap_clk (IN)
-                         net (fo=1388, unset)         0.039     0.039    u_shell/u_fifo_out/mem_reg_0_63_0_6/WCLK
+                         net (fo=1413, unset)         0.039     0.039    u_shell/u_fifo_out/mem_reg_0_63_0_6/WCLK
                          RAMD64E                                      r  u_shell/u_fifo_out/mem_reg_0_63_0_6/RAMC/CLK
                          clock pessimism              0.000     0.039    
                          RAMD64E (Hold_RAMD64E_CLK_I)
