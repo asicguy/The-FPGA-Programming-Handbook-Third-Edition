@@ -26,6 +26,11 @@ The camera stays static because its MIPI lanes and I²C are physical pins. That
 is a constraint worth stating early: DFX swaps *logic*, and anything bonded to a
 pin cannot move.
 
+> **This chapter contains two independent projects.** Everything from here
+> through *Still open* is the DFX socket. The second — **The SYSMON**, at the
+> end of this file — reads the board's potentiometer and on-chip temperature and
+> supply sensors, and shares nothing with the socket but the directory.
+
 ## What it does
 
 | | |
@@ -376,3 +381,260 @@ indistinguishable from working unless someone is watching the panel. Stopping
 master. `fuser -v /dev/dri/card0` is the check that catches it. `ch11-dp.service`
 is a separate hazard — it drives CH11's own bitstream, so reprogramming the PL
 under it points its register reads at hardware that no longer exists.
+
+---
+
+# The SYSMON — a potentiometer, a die temperature, and six supply rails
+
+The second project in this chapter, and independent of the first: it shares the
+directory and nothing else.
+
+The AUP-ZU3 wires a 10K potentiometer to **VP (R13)** and **VN (T12)**, the
+dedicated analog input pins of the UltraScale+ SYSMON. This reads it, shows it
+as a moving bar in a notebook and as an eight-LED thermometer on the board, and
+reads the on-chip temperature and supply sensors alongside it.
+
+**On UltraScale+ there is no XADC.** The block is **SYSMONE4** and the IP is the
+**System Management Wizard**, not the XADC Wizard. The name matters more than it
+sounds like it should, because the two have different register maps — which is
+what this project mostly turned out to be about.
+
+## What it does
+
+| | |
+|---|---|
+| Die temperature | **40.8 °C**, with min/max since power-up latched by the macro |
+| Supply rails | six: `vccint` 0.851, `vccaux` 1.803, `vccbram` 0.852, `vccpsintlp` 0.849, `vccpsintfp` 0.849, `vccpsaux` 1.803 V |
+| Potentiometer | full travel **0 → 0.8545 V**, 85.4% of the channel's range, no clipping; bar normalised so a full turn fills all 8 LEDs |
+| Conversion rate | **5345/s**, 668 complete sequences/s, measured on the macro's own `eoc` pin |
+| Timing | WNS **+0.005 ns**, one SYSMONE4 placed |
+| Tests | 33 Python, 2 SystemVerilog testbenches, Verilator `-Wall` clean |
+
+Every rail cross-checks independently against the PS sensors that Linux's
+`xilinx-ams` driver exposes, which is the only reason to believe the numbers.
+
+## VP and VN take no constraint
+
+They are **dedicated** pins: `PIN_FUNC` `VP`/`VN`, `IS_GENERAL_PURPOSE 0`.
+Vivado places them on the only sites they can occupy, and `constraints/pins.xdc`
+deliberately says nothing about them. The board's own `base.xdc` constrains
+nothing for them either, which is the confirmation that this is intended rather
+than an omission. A `PACKAGE_PIN` line for them is not redundant, it is wrong.
+
+**The external channel's range is fixed and not adjustable.** Unipolar VP/VN is
+0 to 1.0 V. Whatever divider the board puts on the wiper has to land inside
+that; one that exceeded it would clip rather than scale. This board's does not
+— measured, the wiper sits at 64% of full scale.
+
+## The register window is at 0x1400, and that cost a day
+
+This is the part worth reading.
+
+Every SYSMON register read `0x0000`. Temperature included — and temperature is
+never legitimately zero, because the conversion's own offset puts raw 0 at
+−280 °C. Writes to the config registers did not stick: `0x2000`, `0x3000` and
+`0xFFFF` all read back as zero. Linux's `xilinx-ams` driver agreed, reporting
+`in_temp20_raw = 0` for the PL while the PS sensors read ~43 °C correctly. The
+board vendor's own PYNQ base overlay fails in exactly the same way, and its
+implemented design really does place the macro (`SYSMONE4 Used=1, Fixed=1`).
+
+It looked conclusively like a SYSMON that was present, placed and dead. It was
+diagnosed as exactly that, and the diagnosis was wrong.
+
+**`0x200` is the 7-series XADC Wizard's DRP base.** The System Management
+Wizard's AXI window is **13 bits wide — 8 KB, twice the size — and puts the DRP
+at `0x1400`** (aliased at `0x1C00`; address bit 11 is ignored). Reads at `0x200`
+landed on nothing and came back as zeros, which is indistinguishable from dead
+silicon. Map 8 KB too: `MMIO(base, 0x1000)` leaves the registers outside the
+mapping entirely.
+
+```
+0x1400  temp    0xA14D  40.68 C      0x140C  VP/VN  0xA40B  0.6408 V   <- the pot
+0x1404  vccint  0x48AA  0.8515 V     0x1418  vccbram        0.8518 V
+0x1408  vccaux  0x9A0F  1.8054 V     0x1500  config0/1/2  0x1000/0x2190/0x1400
+```
+
+### What broke the deadlock: count the macro's own pins
+
+The wizard brings `eoc_out`, `eos_out`, `busy_out` and `channel_out` out to the
+fabric. Those come off the SYSMONE4 itself and pass through **neither the DRP
+register path nor the PS AMS block** — the two paths that were reporting
+nothing. So they can answer a question neither of those can: *is the converter
+running at all?*
+
+`hdl/sysmon_activity.sv` counts them. It showed **~5400 conversions a second
+while every register still read zero**, which made "wrong address" the only
+remaining explanation and turned a day of hardware forensics into a one-line
+fix.
+
+It **counts** rather than samples, and that is not a detail: `eoc_out` is a
+single-cycle pulse at 100 MHz, so software polling a GPIO at a few kHz would
+miss essentially every one and report a dead converter whether or not one was
+running. Its testbench also pins down that a signal held *high* counts once, not
+once per cycle — a stuck-high input reading as a healthy converter is the other
+way this diagnostic could lie.
+
+The counter stays in the design rather than being deleted along with the bug it
+found. It is the only thing that distinguishes "the SYSMON is dead" from "you
+are reading the wrong address", and `sw/scan_window.py` — which sweeps the whole
+window for non-zero words and flags anything in a plausible temperature band —
+found the real base in seconds once someone thought to look.
+
+**The lesson: when an entire register window reads zero, question the address
+before concluding the hardware is dead.** Verify a suspected map against values
+known independently. Here `vccint` had to be 0.85 V and `vccaux` 1.80 V, and the
+PS sensors had been reporting exactly that the whole time.
+
+### A real finding that explained the wrong symptom
+
+`AMS_PL_CSTS` genuinely does read zero:
+
+```
+AMS + 0x040  AMS_PS_CSTS = 0x08010000    PS sysmon accessible
+AMS + 0x044  AMS_PL_CSTS = 0x00000000    PL sysmon ACCESS bit clear
+```
+
+and the whole PL aperture at `AMS + 0x400` faults uniformly — 0 of 20 offsets
+respond, against 20 of 20 for the PS. That is why `xilinx-ams` silently skips
+the PL channels: it gates on that very bit. All true, all reproducible, and it
+explains **only the AMS route**. It never explained the wizard's own DRP.
+Letting one real finding account for a second, unrelated symptom is precisely
+how the diagnosis went wrong. Read the PL SYSMON through the wizard's AXI
+window; ignore the AMS PL route.
+
+Proving that aperture was gated rather than sparsely decoded needed a
+**fork-per-read probe** — a `SIGBUS` kills the process, so a straight sweep
+stops at the first bad offset and tells you nothing about the rest. Worth
+knowing: `AMS_CTRL` itself faults on undefined offsets too (31 of 64 respond),
+so a single `SIGBUS` proves nothing. Only the uniformity across the whole PL
+aperture does.
+
+## The pot's actual travel
+
+Swept end to end over 30 s, 2965 samples:
+
+```
+minimum   raw 0x0001  code   0  0.0000 V  (  0.0% of full scale)
+maximum   raw 0xDAC1  code 875  0.8545 V  ( 85.5% of full scale)
+travel    0.8545 V = 85.4% of the channel's 1.0 V range
+```
+
+**It reaches 0 V at one stop and 0.8545 V at the other, so it never clips.**
+That is the thing worth knowing, because the unipolar range is fixed at 1.0 V
+and a divider that overshot it would peg the reading at the ceiling and look
+like a pot with a dead zone at the top.
+
+It does not reach full scale, though — the top of travel is 85.4%. Scaled to
+the ADC's range the bar would top out at **seven of its eight LEDs**, so
+`normalize_pot()` rescales the *display* to the pot's real travel and a full
+turn now fills it. Re-swept afterwards: **8 of 8 bar steps reachable**. The
+volts reported stay the true measurement; only the bar is rescaled.
+
+`POT_FULL_SCALE_RAW = 0xDAC1` is a **measured, board-specific constant**, not a
+datasheet value. Two independent sweeps put the top at `0xDAC1` and `0xDAB9`,
+eight counts apart, so it is stable — but on different hardware, re-measure with
+`sw/pot_sweep.py` and change it. The rescale is **clamped**: without that, a
+reading above the measured maximum scales past 16 bits and wraps, sending the
+bar to the *bottom* exactly at the top of the pot's travel.
+
+Parked at one position the reading sat between 0.4665 and 0.4673 V across ten
+seconds — about 0.8 mV peak to peak, roughly one LSB at 10 bits. That is the
+16-sample hardware averaging doing its job.
+
+## The LED bar, and why software is in the path
+
+`hdl/pot_bar.sv` decodes a 16-bit level into an eight-LED thermometer, 8192
+counts per LED, rounded **up** so that one count above zero lights the first LED
+and full scale lights all eight. Truncating instead would leave the bar dark
+until the pot was well off its stop and never reach eight at the top — both of
+which look like a broken pot rather than a rounding choice.
+
+`PotBar.set_reading()` normalises to the pot's measured travel before writing;
+`set_level()` writes straight through, for driving exact LED steps.
+
+The value reaches it from **software**, through an output GPIO, and that is
+forced rather than chosen. `INTERFACE_SELECTION Enable_AXI` gives the wizard's
+bridge ownership of the SYSMONE4's **single** DRP port. There is only one, so
+fabric logic cannot also read conversions out of the macro. The alternatives
+were to write a DRP master in RTL and give up the AXI register interface, or to
+let software read VP/VN and hand the value back. This takes the second: the
+decode stays in hardware, only the transport goes through the PS.
+
+## Address map
+
+| | |
+|---|---|
+| `0x80000000` | System Management Wizard, AXI4-Lite (8 KB window; DRP at `+0x1400`) |
+| `0x80010000` | activity counter GPIO — ch1 `eoc_count`, ch2 packed status |
+| `0x80020000` | pot level out to the LED bar decoder |
+
+The activity counter is deliberately at a **separate** aperture from the
+sysmon's: it has to stay readable when the sysmon is not, because "the sysmon
+tells us nothing" is the exact case it exists to report on.
+
+## Verification
+
+```
+33 passed                                   sw/test_sysmon.py
+[PASS] tb_pot_bar: all checks passed        xsim
+[PASS] tb_sysmon_activity: all checks       xsim
+verilator -Wall                             clean, 4 files, no suppressions
+SYSMONE4 primitives in the implemented design: 1
+WNS: 0.005 ns
+```
+
+The Python tests run against a fake register file and need no board; the MMIO
+object is the only thing mocked. Both testbenches and the driver assert the
+*same* `status_word` packing from opposite sides, so the RTL and the software
+cannot drift apart silently.
+
+The driver **refuses to read a SYSMON that is not converting**, rather than
+reporting a comfortable `0.000 V` and `−280 °C`. Raw temperature of zero is the
+probe, because it is physically impossible. That rule is why the original fault
+was visible at all instead of being quietly plotted.
+
+## Building it
+
+```bash
+source /opt/Xilinx/2025.2/Vivado/settings64.sh
+vivado -mode batch -source project_xadc_sysmon/build.tcl
+
+# check the wizard's configuration in seconds rather than twenty minutes:
+vivado -mode batch -source project_xadc_sysmon/build.tcl -tclargs bd_only
+```
+
+The build asserts what it produced — the top module, and that exactly one
+SYSMONE4 is in the implemented design. Both have already caught a silent
+failure: `add_files` brought the Verilog wrapper in before the block design
+existed, so `update_compile_order` elected *it* as top and `make_wrapper -top`
+did not displace it, and a whole run implemented the bare counter with no PS and
+no sysmon.
+
+Note also that IP Integrator rejects a `.sv` file as the top of a module
+reference (`filemgmt 56-195`), which is why each module has a thin Verilog
+wrapper, the same pattern CH08 and CH09 use.
+
+## Getting it onto the board
+
+```bash
+./deploy/deploy_xadc.sh
+```
+
+Copies the bitstream, `.hwh`, drivers and notebook, and verifies every file by
+md5 — the board has no RTC, so timestamps are meaningless and checksums are the
+only honest check. Then open `notebooks/ch13_xadc_sysmon.ipynb`.
+
+## Still open
+
+**Nothing outstanding on the measurement side.** The pot's travel was in
+question and has since been swept; see *The pot's actual travel* above.
+
+**A physical button on the board powers it off, and it looks nothing like a
+button.** The device tree maps `ps_sw0` on **PS MIO6** to `KEY_POWER` with
+`autorepeat`, and systemd's default `HandlePowerKey=poweroff` applies. One press
+produces a run of `systemd-logind: Power key pressed.` lines and a clean
+shutdown ending in `reboot: Power down` — no panic, no mmc timeouts, none of the
+signatures of a real crash. It happened here seconds after a bitstream load and
+was initially suspected to be a thermal trip or a PL fault. MIO is PS-side and
+untouched by PL reconfiguration, so the PL can never be the cause.
+`journalctl -b -1 | grep -i "power key"` names it immediately.
