@@ -75,6 +75,7 @@ FILES=(
     "$CH13/sw/verify_map.py|sw|-"
     "$CH13/sw/scan_window.py|sw|-"
     "$CH13/sw/pot_sweep.py|sw|-"
+    "$CH13/sw/check_notebook.py|sw|-"
 )
 
 field() { printf '%s' "$1" | cut -d'|' -f"$2"; }
