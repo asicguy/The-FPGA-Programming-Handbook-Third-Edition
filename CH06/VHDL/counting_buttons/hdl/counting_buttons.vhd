@@ -9,38 +9,39 @@
 library IEEE;
 use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
-USE WORK.counting_buttons_pkg.all;
 
 entity counting_buttons is
   generic(
     MODE         : string  := "HEX";    -- "HEX"
     NUM_SEGMENTS : integer := 8;
-    CLK_PER      : integer := 10;       -- Clock period in ns
-    REFR_RATE    : integer := 1000;     -- Refresh rate in Hz
-    ASYNC_BUTTON : string  := "safe"    -- "CLOCK", "NOCLOCK", "SAFE", "DEBOUNCE"
+    ASYNC_BUTTON : string  := "SAFE" -- "CLOCK", "NOCLOCK", "SAFE", "DEBOUNCE"
   );
   port(
-    clk        : in  std_logic;
-    BTNC       : in  std_logic;
-    CPU_RESETN : in  std_logic;
-    anode      : out std_logic_vector(NUM_SEGMENTS - 1 downto 0);
-    cathode    : out std_logic_vector(7 downto 0)
+    clk         : in  std_logic;
+    PL_USER_PB  : in  std_logic_vector(0 downto 0);
+    CPU_RESETN  : in  std_logic;
+    ext_counter : out std_logic_vector(NUM_SEGMENTS*4 - 1 downto 0)
   );
 end entity counting_buttons;
 
 architecture rtl of counting_buttons is
 
+  -- Array of 4 bit digits. The element is constrained for VHDL-2002, which
+  -- does not allow arrays of unconstrained std_logic_vector.
+  type nibble_array_t is array (natural range <>) of std_logic_vector(3 downto 0);
+  subtype encoded_t is nibble_array_t(NUM_SEGMENTS - 1 downto 0);
+
   -- Decimal increment function
-  function dec_inc(din : in array_t(NUM_SEGMENTS-1 downto 0)(3 downto 0))
-  return array_t is
-    variable int_val  : array_t(NUM_SEGMENTS - 1 downto 0)(3 downto 0);
-    variable next_val : integer range 0 to 10;
+  function dec_inc(din : in encoded_t)
+  return encoded_t is
+    variable int_val  : encoded_t;
+    variable next_val : integer range 0 to 16;
     variable carry_in : integer range 0 to 1;
   begin
     carry_in := 1;
     for i in 0 to NUM_SEGMENTS - 1 loop
       next_val := to_integer(unsigned(din(i))) + carry_in;
-      if next_val = 10 then
+      if next_val > 9 then
         int_val(i) := (others => '0');
         carry_in   := 1;
       else
@@ -52,10 +53,10 @@ architecture rtl of counting_buttons is
   end function;
 
   -- Hexadecimal increment function
-  function hex_inc(din : in array_t(NUM_SEGMENTS-1 downto 0)(3 downto 0))
-  return array_t is
+  function hex_inc(din : in encoded_t)
+  return encoded_t is
 
-    variable hex_val  : array_t(NUM_SEGMENTS - 1 downto 0)(3 downto 0);
+    variable hex_val  : encoded_t;
     variable next_val : integer range 0 to 16;
     variable carry_in : integer range 0 to 1;
   begin
@@ -75,39 +76,23 @@ architecture rtl of counting_buttons is
 
   attribute MARK_DEBUG : string;
   attribute ASYNC_REG  : string;
-  signal encoded       : array_t(NUM_SEGMENTS - 1 downto 0)(3 downto 0);
-  signal digit_point   : std_logic_vector(NUM_SEGMENTS - 1 downto 0) := (others => '1');
+  signal encoded       : encoded_t                                   := (others => (others => '0'));
+  signal reset_sync    : std_logic_vector(1 downto 0)                := (others => '1');
+  attribute ASYNC_REG of reset_sync : signal is "TRUE";
+  signal reset         : std_logic;
   signal last_button   : std_logic                                   := '0';
   signal button        : std_logic                                   := '0';
   signal button_down   : std_logic                                   := '0';
   attribute MARK_DEBUG of button_down : signal is "TRUE";
-  signal button_sync   : std_logic_vector(2 downto 0);
-  attribute ASYNC_REG of button_sync : signal is "TRUE";
-  attribute MARK_DEBUG of button_sync : signal is "TRUE";
-  signal counter_en    : std_logic                                   := '0';
-  attribute MARK_DEBUG of counter_en : signal is "TRUE";
-  signal counter       : integer range 0 to 255                      := 0;
-  attribute MARK_DEBUG of counter : signal is "TRUE";
-  signal reset_sync    : std_logic_vector(1 downto 0)                := (others => '1');
-  attribute ASYNC_REG of reset_sync : signal is "TRUE";
-  signal reset         : std_logic;
 
 begin
 
-  u_7seg : entity work.seven_segment
-    generic map(
-      NUM_SEGMENTS => NUM_SEGMENTS,
-      CLK_PER      => CLK_PER,          -- Clock period in ns
-      REFR_RATE    => REFR_RATE         -- Refresh rate in Hz
-    )
-    port map(
-      clk         => clk,
-      reset       => reset,
-      encoded     => encoded,
-      digit_point => digit_point,
-      anode       => anode,
-      cathode     => cathode
-    );
+  process (encoded)
+  begin
+    for i in 0 to NUM_SEGMENTS - 1 loop
+      ext_counter(i*4 + 3 downto i*4) <= encoded(i);
+    end loop;
+  end process;
 
   -- Reset Synchronizer
   process(clk)
@@ -120,28 +105,46 @@ begin
   reset <= reset_sync(1);
 
   -- Capture the rising edge of button press
-  process(clk)
+  g_SAFE : if ASYNC_BUTTON = "SAFE" generate
+    signal button_sync : std_logic_vector(2 downto 0);
+    attribute ASYNC_REG of button_sync : signal is "TRUE";
+    attribute MARK_DEBUG of button_sync : signal is "TRUE";
   begin
-    if rising_edge(clk) then
-      if ASYNC_BUTTON = "SAFE" then
+    process(clk)
+    begin
+      if rising_edge(clk) then
         button_down <= '0';
-        button_sync <= button_sync(1 downto 0) & BTNC;
+        button_sync <= button_sync(1 downto 0) & PL_USER_PB(0);
         if button_sync(2 downto 1) = "01" then
           button_down <= '1';
         else
           button_down <= '0';
         end if;
+      end if;
+    end process;
+  end generate g_SAFE;
 
-      elsif ASYNC_BUTTON = "DEBOUNCE" then
+  g_DEBOUNCE : if ASYNC_BUTTON = "DEBOUNCE" generate
+    signal button_sync : std_logic_vector(2 downto 0);
+    attribute ASYNC_REG of button_sync : signal is "TRUE";
+    attribute MARK_DEBUG of button_sync : signal is "TRUE";
+    signal counter_en  : std_logic              := '0';
+    attribute MARK_DEBUG of counter_en : signal is "TRUE";
+    signal counter     : integer range 0 to 255 := 0;
+    attribute MARK_DEBUG of counter : signal is "TRUE";
+  begin
+    process(clk)
+    begin
+      if rising_edge(clk) then
         button_down <= '0';
-        button_sync <= button_sync(1 downto 0) & BTNC;
+        button_sync <= button_sync(1 downto 0) & PL_USER_PB(0);
         if button_sync(2 downto 1) = "01" then
           counter_en <= '1';
         elsif button_sync(1) = '0' then
           counter_en <= '0';
           counter    <= 0;
         end if;
-        if counter_en then
+        if counter_en = '1' then
           if counter = 255 then
             counter_en  <= '0';
             counter     <= 0;
@@ -150,39 +153,45 @@ begin
             counter <= counter + 1;
           end if;
         end if;
-      else
+        if reset = '1' then
+          counter_en  <= '0';
+          counter     <= 0;
+          button_down <= '0';
+        end if;
+      end if;
+    end process;
+  end generate g_DEBOUNCE;
+
+  g_NOCLOCK : if ASYNC_BUTTON /= "SAFE" and ASYNC_BUTTON /= "DEBOUNCE" generate
+    process(clk)
+    begin
+      if rising_edge(clk) then
         last_button <= button;
-        button      <= BTNC;
-        if BTNC and not button then
+        button      <= PL_USER_PB(0);
+        if PL_USER_PB(0) = '1' and button = '0' then
           button_down <= '1';
         else
           button_down <= '0';
         end if;
       end if;
-      if (reset) then
-        counter_en  <= '0';
-        counter     <= 0;
-        button_down <= '0';
-      end if;
-    end if;
-  end process;
+    end process;
+  end generate g_NOCLOCK;
 
   process(clk)
   begin
     if rising_edge(clk) then
-      if button_down then
+      if button_down = '1' then
         if MODE = "HEX" then
           encoded <= hex_inc(encoded);
         else
           encoded <= dec_inc(encoded);
         end if;
       end if;
-      if reset then
+      if reset = '1' then
         for i in 0 to NUM_SEGMENTS - 1 loop
           encoded(i) <= (others => '0');
         end loop;
         --encoded     <= ((others => '0')(others => '0'));
-        digit_point <= (others => '1');
       end if;
     end if;
   end process;
