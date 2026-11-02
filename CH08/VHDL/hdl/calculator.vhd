@@ -152,145 +152,153 @@ begin
 
   -- AXI Read Channel
   process(s_axi_aclk) begin
-    s_axi_arready <= '1';
-    s_axi_rvalid  <= '0';
-    s_axi_rresp   <= "00";
+    if rising_edge(s_axi_aclk) then
+      s_axi_arready <= '1';
+      s_axi_rvalid_reg  <= '0';
+      s_axi_rresp   <= "00";
 
-    case axil_rd_cs is
-      when RD_IDLE =>
-        if s_axi_arvalid = '1' then
+      case axil_rd_cs is
+        when RD_IDLE =>
+          if s_axi_arvalid = '1' then
+            s_axi_arready <= '0';
+            rd_addr       <= s_axi_araddr(15 downto 0);
+            axil_rd_cs    <= RD_WAIT;
+          end if;
+        when RD_WAIT =>
           s_axi_arready <= '0';
-          rd_addr       <= s_axi_araddr(15 downto 0);
-          axil_rd_cs    <= RD_WAIT;
-        end if;
-      when RD_WAIT =>
-        s_axi_arready <= '0';
-        axil_rd_cs    <= RD_W4RREADY;
-      when RD_W4RREADY =>
-        s_axi_arready <= '0';
-        s_axi_rdata   <= read_data;
-        s_axi_rvalid  <= '1';
-        if s_axi_rready = '1' and s_axi_rvalid_reg = '1' then
-          s_axi_arready <= '1';
-          s_axi_rvalid  <= '0';
-          axil_rd_cs    <= RD_IDLE;
-        end if;
-    end case;
+          axil_rd_cs    <= RD_W4RREADY;
+        when RD_W4RREADY =>
+          s_axi_arready <= '0';
+          s_axi_rdata   <= read_data;
+          s_axi_rvalid_reg  <= '1';
+          if s_axi_rready = '1' and s_axi_rvalid_reg = '1' then
+            s_axi_arready <= '1';
+            s_axi_rvalid_reg  <= '0';
+            axil_rd_cs    <= RD_IDLE;
+          end if;
+      end case;
 
-    if s_axi_aresetn = '0' then
-      axil_rd_cs <= RD_IDLE;
+      if s_axi_aresetn = '0' then
+        axil_rd_cs <= RD_IDLE;
+      end if;
     end if;
   end process;
 
   -- AXI Write Channel
   process (s_axi_aclk) begin
-    axil_we       <= '0';
-    s_axi_bvalid  <= '0';
-    s_axi_bresp   <= "00"; -- OKAY
+    if rising_edge(s_axi_aclk) then
+      axil_we       <= '0';
+      s_axi_bvalid  <= '0';
+      s_axi_bresp   <= "00"; -- OKAY
 
-    case axil_cs is
-      when WR_IDLE =>
-        s_axi_awready <= '1';
-        s_axi_wready  <= '1';
-        if s_axi_awvalid = '1' and s_axi_wvalid = '1' then
-          s_axi_awready <= '0';
-          s_axi_wready  <= '0';
-          axil_addr     <= s_axi_awaddr(15 downto 0);
-          axil_we       <= '1';
-          s_axi_bvalid  <= '1';
-          axil_cs       <= WR_BRESP;
-          axil_din      <= s_axi_wdata;
-          axil_be       <= s_axi_wstrb;
-        elsif s_axi_awvalid = '1' and s_axi_wvalid = '0' then
-          -- Address only
-          s_axi_awready <= '0';
-          axil_addr     <= s_axi_awaddr(15 downto 0);
-          axil_cs       <= WR_W4DATA;
-        elsif s_axi_awvalid = '0' and s_axi_wvalid = '1' then
-          s_axi_wready <= '0';
-          axil_we      <= '1';
-          axil_din     <= s_axi_wdata;
-          axil_be      <= s_axi_wstrb;
-          axil_cs      <= WR_W4ADDR;
-        end if;
-      when WR_W4DATA =>
-        if s_axi_wvalid = '1' then
-          s_axi_wready <= '0';
-          axil_we      <= '1';
-          s_axi_bvalid <= '1';
-          axil_din     <= s_axi_wdata;
-          axil_be      <= s_axi_wstrb;
-          axil_cs      <= WR_BRESP;
-        end if;
-      when WR_W4ADDR =>
-        if s_axi_awvalid = '1' then
-          s_axi_awready <= '0';
-          s_axi_bvalid  <= '1';
-          axil_addr     <= s_axi_awaddr(15 downto 0);
-          axil_cs       <= WR_BRESP;
-        end if;
-      when WR_BRESP =>
-        s_axi_awready <= '0';
-        s_axi_wready  <= '0';
-        s_axi_bvalid  <= '1';
-        if s_axi_bready = '1' then
+      case axil_cs is
+        when WR_IDLE =>
           s_axi_awready <= '1';
           s_axi_wready  <= '1';
-          s_axi_bvalid  <= '0';
-          axil_cs       <= WR_IDLE;
-        end if;
-    end case;
-    if s_axi_aresetn = '0' then
-      axil_cs <= WR_IDLE;
+          if s_axi_awvalid = '1' and s_axi_wvalid = '1' then
+            s_axi_awready <= '0';
+            s_axi_wready  <= '0';
+            axil_addr     <= s_axi_awaddr(15 downto 0);
+            axil_we       <= '1';
+            s_axi_bvalid  <= '1';
+            axil_cs       <= WR_BRESP;
+            axil_din      <= s_axi_wdata;
+            axil_be       <= s_axi_wstrb;
+          elsif s_axi_awvalid = '1' and s_axi_wvalid = '0' then
+            -- Address only
+            s_axi_awready <= '0';
+            axil_addr     <= s_axi_awaddr(15 downto 0);
+            axil_cs       <= WR_W4DATA;
+          elsif s_axi_awvalid = '0' and s_axi_wvalid = '1' then
+            s_axi_wready <= '0';
+            axil_we      <= '1';
+            axil_din     <= s_axi_wdata;
+            axil_be      <= s_axi_wstrb;
+            axil_cs      <= WR_W4ADDR;
+          end if;
+        when WR_W4DATA =>
+          if s_axi_wvalid = '1' then
+            s_axi_wready <= '0';
+            axil_we      <= '1';
+            s_axi_bvalid <= '1';
+            axil_din     <= s_axi_wdata;
+            axil_be      <= s_axi_wstrb;
+            axil_cs      <= WR_BRESP;
+          end if;
+        when WR_W4ADDR =>
+          if s_axi_awvalid = '1' then
+            s_axi_awready <= '0';
+            s_axi_bvalid  <= '1';
+            axil_addr     <= s_axi_awaddr(15 downto 0);
+            axil_cs       <= WR_BRESP;
+          end if;
+        when WR_BRESP =>
+          s_axi_awready <= '0';
+          s_axi_wready  <= '0';
+          s_axi_bvalid  <= '1';
+          if s_axi_bready = '1' then
+            s_axi_awready <= '1';
+            s_axi_wready  <= '1';
+            s_axi_bvalid  <= '0';
+            axil_cs       <= WR_IDLE;
+          end if;
+      end case;
+      if s_axi_aresetn = '0' then
+        axil_cs <= WR_IDLE;
+      end if;
     end if;
   end process;
 
   process (s_axi_aclk) begin
-    start <= '0';
-    if set_int = '1' then
-      interrupt_out <= '1';
-    end if;
-    if axil_we = '1' then
-      case axil_addr(7 downto 0) is
-        when REG_A =>
-          for i in 0 to 3 loop
-            if axil_be(i) = '1' then
-              a_in((8*i) + 7 downto 8*i) <= axil_din((8*i) + 7 downto 8*i);
+    if rising_edge(s_axi_aclk) then
+      start <= '0';
+      if set_int = '1' then
+        interrupt_out <= '1';
+      end if;
+      if axil_we = '1' then
+        case axil_addr(7 downto 0) is
+          when REG_A =>
+            for i in 0 to 3 loop
+              if axil_be(i) = '1' then
+                a_in((8*i) + 7 downto 8*i) <= axil_din((8*i) + 7 downto 8*i);
+              end if;
+            end loop;
+          when REG_B =>
+            for i in 0 to 3 loop
+              if axil_be(i) = '1' then
+                b_in((8*i) + 7 downto 8*i) <= axil_din((8*i) + 7 downto 8*i);
+              end if;
+            end loop;
+          when REG_OP =>
+            start <= '1';
+            if axil_be(0) = '1' then
+              op_store <= axil_din(1 downto 0);
             end if;
-          end loop;
-        when REG_B =>
-          for i in 0 to 3 loop
-            if axil_be(i) = '1' then
-              b_in((8*i) + 7 downto 8*i) <= axil_din((8*i) + 7 downto 8*i);
+          when REG_INT =>
+            if interrupt_out_reg = '1' and axil_din(0) = '1' and axil_be(0) = '1' then
+              interrupt_out <= '0';
             end if;
-          end loop;
-        when REG_OP =>
-          start <= '1';
-          if axil_be(0) = '1' then
-            op_store <= axil_din(1 downto 0);
-          end if;
-        when REG_INT =>
-          if interrupt_out_reg = '1' and axil_din(0) = '1' and axil_be(0) = '1' then
-            interrupt_out <= '0';
-          end if;
-        when others => null;
-      end case;
+          when others => null;
+        end case;
+      end if;
     end if;
   end process;
 
   operator <= operator_t'val(to_integer(unsigned(axil_din(1 downto 0))));
 
   process(s_axi_aclk) begin
-    read_data <= (others => '0');
-    case rd_addr(7 downto 0) is
-      when REG_A   => read_data             <= a_in;
-      when REG_B   => read_data             <= b_in;
-      when REG_C   => read_data             <= c_out;
-      when REG_REM => read_data             <= rem_out;
-      when REG_OP  => read_data(1 downto 0) <= op_store;
-      when REG_INT => read_data(0)          <= interrupt_out_reg;
-      when others  => null;
-    end case;
+    if rising_edge(s_axi_aclk) then
+      read_data <= (others => '0');
+      case rd_addr(7 downto 0) is
+        when REG_A   => read_data             <= a_in;
+        when REG_B   => read_data             <= b_in;
+        when REG_C   => read_data             <= c_out;
+        when REG_REM => read_data             <= rem_out;
+        when REG_OP  => read_data(1 downto 0) <= op_store;
+        when REG_INT => read_data(0)          <= interrupt_out_reg;
+        when others  => null;
+      end case;
+    end if;
   end process;
 
 end;
