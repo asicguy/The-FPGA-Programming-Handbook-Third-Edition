@@ -79,6 +79,7 @@ architecture rtl of calculator is
   signal op_store    : std_logic_vector(1 downto 0);
   signal s_axi_rvalid_reg  : std_logic;
   signal interrupt_out_reg : std_logic;
+  signal reset             : std_logic;
 begin
 
   s_axi_rvalid  <= s_axi_rvalid_reg;
@@ -135,13 +136,14 @@ begin
     end if;
   end process;
 
+  reset <= not s_axi_aresetn;
   u_divider_nr : entity work.divider_nr
     generic map (
       BITS      => BITS
     )
     port map (
       clk       => s_axi_aclk,
-      reset     => s_axi_aresetn,
+      reset     => reset,
       start     => start_div,
       dividend  => unsigned(dividend),
       divisor   => unsigned(divisor),

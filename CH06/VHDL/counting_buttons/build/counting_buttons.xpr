@@ -3,7 +3,7 @@
 <!--                                                         -->
 <!-- Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.   -->
 
-<Project Version="7" Minor="61" Path="C:/Projects/The-FPGA-Programming-Handbook-Second-Edition/CH4/VHDL/counting_buttons/build/counting_buttons.xpr">
+<Project Version="7" Minor="61" Path="counting_buttons.xpr">
   <DefaultLaunch Dir="$PRUNDIR"/>
   <Configuration>
     <Option Name="Id" Val="58162646f291406cb9e4e76f59d75599"/>

@@ -22,7 +22,6 @@ module counting_buttons
    );
 
   logic [NUM_SEGMENTS-1:0][3:0]       encoded;
-  logic [NUM_SEGMENTS-1:0]            digit_point;
   (* ASYNC_REG = "TRUE" *) logic [1:0]reset_sync = '1;
   logic                               reset;
 
@@ -91,7 +90,6 @@ module counting_buttons
 
   initial begin
     encoded     = '0;
-    digit_point = '1;
   end
 
   // Reset Synchronizer
@@ -102,7 +100,6 @@ module counting_buttons
     if (button_down) encoded <= (MODE == "HEX") ? encoded + 1'b1 : dec_inc(encoded);
     if (reset) begin
       encoded     <= '0;
-      digit_point <= '1;
     end
   end
 
